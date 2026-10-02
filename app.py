@@ -137,7 +137,11 @@ def send_push_to_user(db,user_id,title,body,url='/nurse',extra=None,endpoint=Non
     if extra: data.update(extra)
     for sub in q.all():
         try:
-            webpush(subscription_info=json.loads(sub.payload),data=json.dumps(data),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_SUBJECT}); sent+=1
+            push_headers=None
+            ep=(sub.endpoint or '').lower()
+            if 'notify.windows.com' in ep:
+                push_headers={'X-WNS-Type':'wns/raw','Content-Type':'application/octet-stream'}
+            webpush(subscription_info=json.loads(sub.payload),data=json.dumps(data),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_SUBJECT},headers=push_headers,ttl=600); sent+=1
         except WebPushException as exc:
             status=getattr(getattr(exc,'response',None),'status_code',None)
             detail=f'{status or "push_error"}: {str(exc)[:300]}'
