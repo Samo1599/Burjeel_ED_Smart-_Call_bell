@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: burjeel-ed-call
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: burjeel-ed-call-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: SLA_SECONDS
+        value: "120"
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:it@example.com
+
+databases:
+  - name: burjeel-ed-call-db
+    databaseName: burjeel_call
+    plan: free
