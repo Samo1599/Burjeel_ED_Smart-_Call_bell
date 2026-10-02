@@ -47,7 +47,7 @@ app.add_middleware(SessionMiddleware, secret_key=os.getenv('SECRET_KEY','dev-sec
 TEMPLATES = {
     "base.html": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><title>{% block title %}Burjeel ED Call{% endblock %}</title><link rel=\"manifest\" href=\"/manifest.webmanifest\"><meta name=\"theme-color\" content=\"#004f9e\"><link rel=\"apple-touch-icon\" href=\"/static/icons/icon-192.png\"><link rel=\"stylesheet\" href=\"/static/app.css\"></head><body><header class=\"topbar\"><div class=\"brand\"><img src=\"/static/icons/icon-192.png\" alt=\"logo\"><div><b>Burjeel ED Call</b><span>Smart Call Bell</span></div></div>{% if current_user %}<div class=\"userbox\"><span>{{ current_user.name }}</span><small>{{ current_user.role.replace('_',' ')|title }}</small><a href=\"/logout\">Logout</a></div>{% endif %}</header>{% if current_user %}<nav class=\"nav\">{% if current_user.role in ['nurse','charge'] %}<a href=\"/nurse\">My Rooms</a>{% endif %}{% if current_user.role in ['charge','manager','ed_manager','admin'] %}<a href=\"/charge\">Live Board</a>{% endif %}<a href=\"/wallboard\">📺 Call Bell Screen</a>{% if current_user.role in ['manager','ed_manager','admin'] %}<a href=\"/manager\">Management</a>{% endif %}{% if current_user.role == 'admin' %}<a href=\"/admin\">Admin</a>{% endif %}</nav>{% endif %}<main class=\"container\">{% block content %}{% endblock %}</main><script>window.VAPID_PUBLIC_KEY='{{ vapid_public_key|default('') }}';</script><script src=\"/static/app.js\"></script>{% block scripts %}{% endblock %}</body></html>",
     "login.html": "{% extends 'base.html' %}{% block title %}Sign in - Burjeel ED Call{% endblock %}\n{% block content %}\n<section class=\"login-shell\"><div class=\"login-card\">\n<img class=\"hero-logo\" src=\"/static/icons/icon-512.png\"><h1>ED Smart Call Bell</h1><p>Secure staff access</p>\n{% if error %}<div class=\"alert danger\">{{ error }}</div>{% endif %}\n<form method=\"post\" action=\"/login\">\n<label>Email<input name=\"email\" type=\"email\" required placeholder=\"sara@demo.local\"></label>\n<label>Password<div class=\"password-wrap\"><input id=\"loginPassword\" name=\"password\" type=\"password\" required placeholder=\"••••••••\"><button type=\"button\" class=\"password-eye\" aria-label=\"Show password\" onclick=\"togglePassword('loginPassword',this)\">👁</button></div></label>\n<button class=\"btn primary wide\">Sign in</button>\n</form>\n<div class=\"login-security-note\">🔔 Nurse and Charge Nurse accounts verify notifications before entering the live workspace.</div>\n<div class=\"demo\"><b>Demo</b><span>sara@demo.local / Demo123!</span><span>charge@demo.local / Demo123!</span><span>manager@demo.local / Demo123!</span></div>\n</div></section>\n{% endblock %}",
-    "notification_setup.html": "{% extends 'base.html' %}{% block title %}Notification Verification - Burjeel ED Call{% endblock %}\n{% block content %}\n<section class=\"notify-setup-shell\"><div class=\"notify-setup-card\">\n<img class=\"hero-logo\" src=\"/static/icons/icon-512.png\">\n<div class=\"eyebrow\">Device safety check</div><h1>Notifications Required</h1>\n<p>Nurse call notifications must be verified on this device before continuing.</p>\n<div id=\"notifyWarning\" class=\"alert amber\">⚠ Calls may be missed until this device is confirmed.</div>\n<div class=\"notify-progress\">\n  <div class=\"notify-chip\" id=\"stepPermission\"><span class=\"chip-dot\"></span><b>Permission</b><span class=\"step-state\">Waiting</span></div>\n  <div class=\"notify-chip\" id=\"stepSubscription\"><span class=\"chip-dot\"></span><b>Push Subscription</b><span class=\"step-state\">Waiting</span></div>\n  <div class=\"notify-chip\" id=\"stepTest\"><span class=\"chip-dot\"></span><b>Test Alert</b><span class=\"step-state\">Waiting</span></div>\n  <div class=\"notify-chip\" id=\"stepConfirmed\"><span class=\"chip-dot\"></span><b>Device Confirmed</b><span class=\"step-state\">Waiting</span></div>\n</div>\n<div id=\"notifyStatus\" class=\"notify-status\">Ready to verify this device.</div>\n<button id=\"verifyBtn\" class=\"btn primary wide\" onclick=\"verifyNotifications()\">Verify Notifications</button>\n<button id=\"continueBtn\" class=\"btn success wide\" style=\"display:none\" onclick=\"location.href='{{next_url}}'\">Continue to Dashboard</button>\n<div class=\"notify-device\"><span>Account</span><b>{{current_user.name}}</b><span>Role</span><b>{{current_user.role.replace('_',' ')|title}}</b><span>Last step</span><b id=\"deviceState\">Not verified</b></div>\n<p class=\"muted notify-help\">If permission is blocked, enable notifications for this site in browser settings, then tap Retry.</p>\n</div></section>\n{% endblock %}\n{% block scripts %}<script>\nfunction markStep(id,state,text){const el=document.getElementById(id);el.classList.remove('ok','bad','working');el.classList.add(state);el.querySelector('.step-state').textContent=text}\nlet deviceConfirmed=false;\nfunction finishNotificationVerification(){\n  if(deviceConfirmed)return;\n  deviceConfirmed=true;\n  markStep('stepConfirmed','ok','Confirmed');\n  document.getElementById('deviceState').textContent='Ready';\n  document.getElementById('notifyWarning').className='alert success';\n  document.getElementById('notifyWarning').textContent='✓ Device ready for nurse call notifications.';\n  document.getElementById('notifyStatus').textContent='Notifications are active and verified on this device.';\n  const btn=document.getElementById('verifyBtn');btn.style.display='none';\n  document.getElementById('continueBtn').style.display='block';\n}\nnavigator.serviceWorker?.addEventListener('message',async e=>{\n  if(e.data&&e.data.type==='PUSH_CONFIRMED'){\n    try{await fetch('/api/push/confirm-device',{method:'POST'});}catch(_){}\n    finishNotificationVerification();\n  }\n});\nasync function verifyNotifications(){\n const btn=document.getElementById('verifyBtn'),status=document.getElementById('notifyStatus');deviceConfirmed=false;btn.disabled=true;btn.textContent='Verifying Notifications...';\n try{\n  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))throw new Error('This browser does not support Web Push notifications.');\n  markStep('stepPermission','working','Checking');\n  let p=Notification.permission;if(p!=='granted')p=await Notification.requestPermission();\n  if(p!=='granted'){markStep('stepPermission','bad','Blocked');throw new Error('Notification permission is blocked. Please allow notifications in browser settings.')}\n  markStep('stepPermission','ok','Allowed');\n  markStep('stepSubscription','working','Registering');\n  const reg=await navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'});await reg.update();await navigator.serviceWorker.ready;\n  const key=''+(window.VAPID_PUBLIC_KEY||'');if(!key)throw new Error('Push keys are not configured on the server.');\n  let sub=await reg.pushManager.getSubscription();\n  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(key)});\n  const sr=await fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});\n  if(!sr.ok)throw new Error('Could not register this device.');\n  markStep('stepSubscription','ok','Registered');\n  markStep('stepTest','working','Sending');\n  markStep('stepConfirmed','working','Listening');\n  const tr=await fetch('/api/push/test',{method:'POST'}),td=await tr.json();\n  if(!tr.ok||!td.ok){markStep('stepTest','bad','Failed');throw new Error(td.error||'Test notification could not be sent.')}\n  markStep('stepTest','ok','Sent');status.textContent='Test alert sent. Waiting for this browser to confirm receipt...';\n  for(let i=0;i<15&&!deviceConfirmed;i++)await new Promise(r=>setTimeout(r,1000));\n  if(!deviceConfirmed){\n    markStep('stepConfirmed','bad','Not confirmed');\n    throw new Error('The push server accepted the test, but this browser did not report receipt. Refresh once, then tap Retry.');\n  }\n }catch(e){if(!deviceConfirmed){status.textContent=e.message||'Notification verification failed.';btn.disabled=false;btn.textContent='Retry Notification Setup'}}\n}\nverifyNotifications();\n</script>{% endblock %}",
+    "notification_setup.html": "{% extends 'base.html' %}{% block title %}Notification Verification - Burjeel ED Call{% endblock %}\n{% block content %}\n<section class=\"notify-mini-shell\">\n  <div class=\"notify-mini-card\">\n    <div class=\"notify-mini-title\">🔔 <b>Notifications Required</b></div>\n    <div class=\"notify-mini-sub\">Notifications are required. Checking browser permission...</div>\n    <div id=\"iosInstallHint\" class=\"notify-platform-hint\" style=\"display:none\">📱 On iPhone/iPad, add Burjeel ED Call to the Home Screen and open it from the app icon before enabling notifications.</div>\n    <div class=\"notify-mini-steps\">\n      <div class=\"notify-mini-chip\" id=\"stepPermission\"><span class=\"chip-dot\"></span><b>Permission</b><small class=\"step-state\">Waiting</small></div>\n      <div class=\"notify-mini-chip\" id=\"stepSubscription\"><span class=\"chip-dot\"></span><b>Push Subscription</b><small class=\"step-state\">Waiting</small></div>\n      <div class=\"notify-mini-chip\" id=\"stepTest\"><span class=\"chip-dot\"></span><b>Test Alert</b><small class=\"step-state\">Waiting</small></div>\n      <div class=\"notify-mini-chip\" id=\"stepConfirmed\"><span class=\"chip-dot\"></span><b>Device Confirmed</b><small class=\"step-state\">Waiting</small></div>\n    </div>\n  </div>\n  <div id=\"notifyStatus\" class=\"notify-mini-status\">Preparing notification check...</div>\n  <button id=\"verifyBtn\" class=\"notify-verify-btn\" onclick=\"verifyNotifications()\">Verifying Notifications...</button>\n  <button id=\"continueBtn\" class=\"notify-verify-btn ready\" style=\"display:none\" onclick=\"location.href='{{next_url}}'\">Notifications Ready — Continue</button>\n</section>\n{% endblock %}\n{% block scripts %}<script>\nfunction markStep(id,state,text){const el=document.getElementById(id);el.classList.remove('ok','bad','working');el.classList.add(state);el.querySelector('.step-state').textContent=text}\nfunction isIOS(){return /iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1)}\nfunction isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true}\nasync function verifyNotifications(){\n const btn=document.getElementById('verifyBtn'),status=document.getElementById('notifyStatus'),iosHint=document.getElementById('iosInstallHint');\n btn.disabled=true;btn.textContent='Verifying Notifications...';\n try{\n  if(isIOS()&&!isStandalone()){iosHint.style.display='block';throw new Error('iPhone/iPad Web Push requires the Home Screen web app. Add this site to Home Screen, open it there, then retry.')}\n  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))throw new Error('Web Push is not supported in this browser/device mode.');\n  markStep('stepPermission','working','Checking');\n  let p=Notification.permission;\n  if(p!=='granted')p=await Notification.requestPermission();\n  if(p!=='granted'){markStep('stepPermission','bad','Blocked');throw new Error('Notification permission is blocked. Enable notifications for this site, then retry.')}\n  markStep('stepPermission','ok','Allowed');\n  markStep('stepSubscription','working','Registering');\n  const reg=await navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'});await reg.update();await navigator.serviceWorker.ready;\n  const key=''+(window.VAPID_PUBLIC_KEY||'');if(!key)throw new Error('Push keys are not configured on the server.');\n  let sub=await reg.pushManager.getSubscription();\n  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(key)});\n  const sr=await fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});\n  if(!sr.ok)throw new Error('Could not register this browser for push.');\n  markStep('stepSubscription','ok','Registered');\n  markStep('stepTest','working','Sending');markStep('stepConfirmed','working','Checking');\n  const tr=await fetch('/api/push/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:sub.endpoint})});\n  const td=await tr.json();\n  if(!tr.ok||!td.ok){markStep('stepTest','bad','Failed');throw new Error(td.error||'Test notification failed.')}\n  markStep('stepTest','ok','Sent');\n  const token=td.verification_token;status.textContent='Test alert sent. Waiting for this device to confirm receipt...';\n  let verified=false;\n  for(let i=0;i<18;i++){await new Promise(r=>setTimeout(r,1000));const rr=await fetch('/api/push/verification/'+encodeURIComponent(token),{cache:'no-store'});if(rr.ok){const rd=await rr.json();if(rd.verified){verified=true;break}}}\n  if(!verified){markStep('stepConfirmed','bad','Not confirmed');throw new Error('The push service accepted the test, but this device did not receive/confirm it. Check OS/browser notification settings and retry.')}\n  markStep('stepConfirmed','ok','Confirmed');status.textContent='✓ Notifications are active on this device.';btn.style.display='none';document.getElementById('continueBtn').style.display='block';\n }catch(e){status.textContent=e.message||'Notification verification failed.';btn.disabled=false;btn.textContent='Retry Notification Setup'}\n}\nverifyNotifications();\n</script>{% endblock %}",
     "nurse.html": "{% extends 'base.html' %}{% block title %}My Rooms - Burjeel ED Call{% endblock %}{% block content %}<div class=\"page-head\"><div><div class=\"eyebrow\">Nurse workspace</div><h1>My Rooms</h1><p>Assigned rooms and live patient calls.</p></div><button class=\"btn secondary\" onclick=\"enablePush()\">Enable notifications</button></div><div class=\"stats\"><div class=\"stat\"><b>{{ rooms|length }}</b><span>Assigned rooms</span></div><div class=\"stat red\"><b>{{ calls|length }}</b><span>Active calls</span></div><div class=\"stat amber\"><b>{{ pending_handovers|length }}</b><span>Pending handovers</span></div></div>{% if pending_handovers %}<section class=\"panel\"><h2>Handover requests</h2>{% for h in pending_handovers %}<div class=\"list-row\"><b>{{h.room.code}}</b><span>From {{h.from_nurse.name}}</span><button class=\"btn primary\" onclick=\"acceptHandover({{h.id}})\">Accept</button></div>{% endfor %}</section><br>{% endif %}<section class=\"grid rooms\">{% for room in rooms %}<article class=\"room-card {% if calls|selectattr('room_id','equalto',room.id)|list %}hot{% endif %}\"><div class=\"room-top\"><b>{{ room.code }}</b><span>{{ room.zone }}</span></div>{% set rcalls = calls|selectattr('room_id','equalto',room.id)|list %}{% if rcalls %}{% set c=rcalls[0] %}<div class=\"call-status {{ c.status }}\">{{ c.status.replace('_',' ')|upper }}</div><div class=\"timer\" data-created=\"{{ c.created_at.isoformat() }}\" data-call-id=\"{{ c.id }}\">00:00</div><p>{{ c.reason }}</p><div class=\"actions\">{% if c.status in ['new','escalated'] %}<button class=\"btn primary\" onclick=\"callAction({{c.id}},'ack')\">Acknowledge</button>{% endif %}{% if c.status in ['acknowledged','taken_over','escalated'] %}<button class=\"btn success\" onclick=\"callAction({{c.id}},'arrive')\">Arrived</button>{% endif %}{% if c.status=='arrived' %}<button class=\"btn success\" onclick=\"callAction({{c.id}},'resolve')\">Resolve</button>{% endif %}</div>{% else %}<div class=\"ready\">● Ready</div><p class=\"muted\">No active patient call</p>{% endif %}{% if colleagues %}<div class=\"handover-box\"><select id=\"handover-{{room.id}}\"><option value=\"\">Hand over to…</option>{% for n in colleagues %}<option value=\"{{n.id}}\">{{n.name}}</option>{% endfor %}</select><button class=\"btn secondary\" onclick=\"handoverRoom({{room.id}})\">Handover</button></div>{% endif %}</article>{% endfor %}</section>{% endblock %}",
     "charge.html": "{% extends 'base.html' %}{% block title %}Charge Nurse Live Board{% endblock %}{% block content %}\n<div id=\"charge-live-root\" data-refresh-key=\"{{refresh_key}}\">\n<div class=\"page-head\"><div><div class=\"eyebrow\">Charge Nurse Command</div><h1>ED Live Call Board</h1><p>All active calls, escalations, ownership and room assignment.</p></div><button class=\"btn secondary\" onclick=\"enablePush()\">Enable notifications</button></div>\n<div class=\"stats\"><div class=\"stat\"><b>{{ rooms|length }}</b><span>Rooms</span></div><div class=\"stat red\"><b>{{ calls|length }}</b><span>Open calls</span></div><div class=\"stat amber\"><b>{{ calls|selectattr('status','equalto','escalated')|list|length }}</b><span>Escalated</span></div></div>\n<section class=\"grid rooms\">\n{% for room in rooms %}{% set rcalls=calls|selectattr('room_id','equalto',room.id)|list %}\n<article class=\"room-card {% if rcalls %}hot{% endif %}\">\n  <div class=\"room-top\"><b>{{room.code}}</b><span>{{room.zone}}</span></div>\n  <div class=\"assignment\">Assigned: <b>{{ room.assigned_nurse.name if room.assigned_nurse else 'Unassigned' }}</b></div>\n  {% if rcalls %}{% set c=rcalls[0] %}\n    <div class=\"call-status {{c.status}}\">{{c.status.replace('_',' ')|upper}}</div>\n    <div class=\"timer\" data-created=\"{{ c.created_at.isoformat() }}\" data-call-id=\"{{c.id}}\">00:00</div>\n    <p>{{c.reason}}</p>\n    {% if c.escalation_reason %}<div class=\"alert danger small\">{{c.escalation_reason}}</div>{% endif %}\n    <div class=\"actions\">\n      {% if c.status in ['new','escalated'] %}<button class=\"btn danger\" onclick=\"callAction({{c.id}},'takeover')\">Take Over</button>{% endif %}\n      {% if c.status in ['taken_over','acknowledged','escalated'] %}<button class=\"btn success\" onclick=\"callAction({{c.id}},'arrive')\">Arrived</button>{% endif %}\n      {% if c.status=='arrived' %}<button class=\"btn success\" onclick=\"callAction({{c.id}},'resolve')\">Resolve</button>{% endif %}\n    </div>\n    {% if c.status in ['new','acknowledged','escalated','taken_over'] %}\n    <div class=\"reassign-box\">\n      <div class=\"reassign-title\"><b>Reassign Nurse</b><span>Original call timer continues</span></div>\n      <select id=\"reassign-nurse-{{c.id}}\">\n        <option value=\"\">Select active nurse…</option>\n        {% for n in nurses %}<option value=\"{{n.id}}\" {% if c.assigned_nurse_id==n.id %}disabled{% endif %}>{{n.name}}{% if c.assigned_nurse_id==n.id %} (Current){% endif %}</option>{% endfor %}\n      </select>\n      <select id=\"reassign-reason-{{c.id}}\">\n        <option value=\"\">Reason…</option>\n        <option>Workload balancing</option><option>Break</option><option>Shift change</option><option>No response</option><option>Clinical priority</option><option>Other</option>\n      </select>\n      <button class=\"btn secondary\" onclick=\"reassignCall({{c.id}})\">Reassign</button>\n    </div>\n    {% endif %}\n  {% else %}\n    <div class=\"ready\">● Ready</div>\n    <select onchange=\"assignRoom({{room.id}},this.value)\"><option value=\"\">Reassign nurse…</option>{% for n in nurses %}<option value=\"{{n.id}}\">{{n.name}}</option>{% endfor %}</select>\n  {% endif %}\n</article>{% endfor %}\n</section></div>{% endblock %}\n{% block scripts %}<script>startSilentRefresh('#charge-live-root',3000);</script>{% endblock %}",
     "manager.html": "{% extends 'base.html' %}{% block title %}KPI Management{% endblock %}\n{% block content %}\n<div class=\"page-head\">\n  <div><div class=\"eyebrow\">Operational oversight & analytics</div><h1>KPI Management</h1><p>Call-bell performance, SLA compliance, nurse workload, room performance and downloadable reports.</p></div>\n  <div class=\"manager-export-actions\"><a class=\"btn primary\" href=\"/manager/export.xlsx?{{filter_qs}}\">Export Excel</a><a class=\"btn secondary\" href=\"/manager/export.pdf?{{filter_qs}}\">Export PDF</a></div>\n</div>\n\n<form class=\"manager-filter panel\" method=\"get\" action=\"/manager\">\n  <div class=\"period-buttons\">\n    <button name=\"period\" value=\"today\" class=\"filter-chip {{'active' if period=='today' else ''}}\">Today</button>\n    <button name=\"period\" value=\"week\" class=\"filter-chip {{'active' if period=='week' else ''}}\">Weekly</button>\n    <button name=\"period\" value=\"month\" class=\"filter-chip {{'active' if period=='month' else ''}}\">Monthly</button>\n    <button type=\"button\" class=\"filter-chip {{'active' if period=='custom' else ''}}\" onclick=\"document.getElementById('customDates').classList.toggle('show')\">Custom Date</button>\n  </div>\n  <div id=\"customDates\" class=\"custom-dates {{'show' if period=='custom' else ''}}\">\n    <label>From <input type=\"date\" name=\"from\" value=\"{{from_date}}\"></label>\n    <label>To <input type=\"date\" name=\"to\" value=\"{{to_date}}\"></label>\n    <button class=\"btn primary\" name=\"period\" value=\"custom\">Apply</button>\n  </div>\n</form>\n\n<div class=\"stats kpi-stats\">\n  <div class=\"stat\"><b>{{kpi.total}}</b><span>Total calls</span></div>\n  <div class=\"stat\"><b>{{kpi.avg_response}}</b><span>Avg response</span></div>\n  <div class=\"stat\"><b>{{kpi.median_response}}</b><span>Median response</span></div>\n  <div class=\"stat amber\"><b>{{kpi.over_2m}}</b><span>Calls over 2 min</span></div>\n  <div class=\"stat red\"><b>{{kpi.over_5m}}</b><span>Calls over 5 min</span></div>\n  <div class=\"stat\"><b>{{kpi.escalations}}</b><span>Escalations</span></div>\n  <div class=\"stat\"><b>{{kpi.takeovers}}</b><span>Charge takeovers</span></div>\n  <div class=\"stat\"><b>{{kpi.sla_rate}}</b><span>SLA compliance</span></div>\n</div>\n\n<div class=\"manager-grid\">\n<section class=\"panel\">\n  <div class=\"section-head\"><div><h2>Nurse Performance</h2><p class=\"muted\">Call volume, average response and escalation exposure.</p></div></div>\n  <div class=\"table-wrap\"><table><thead><tr><th>Nurse</th><th>Calls</th><th>Avg response</th><th>Over SLA</th><th>Escalated</th></tr></thead><tbody>\n  {% for n in nurse_perf %}<tr><td><b>{{n.name}}</b></td><td>{{n.calls}}</td><td>{{n.avg_response}}</td><td>{{n.over_sla}}</td><td>{{n.escalated}}</td></tr>{% endfor %}\n  {% if not nurse_perf %}<tr><td colspan=\"5\" class=\"muted\">No calls in this period.</td></tr>{% endif %}\n  </tbody></table></div>\n</section>\n\n<section class=\"panel\">\n  <div class=\"section-head\"><div><h2>Room Performance</h2><p class=\"muted\">Demand and response by room.</p></div></div>\n  <div class=\"table-wrap\"><table><thead><tr><th>Room</th><th>Zone</th><th>Calls</th><th>Avg response</th><th>SLA breaches</th></tr></thead><tbody>\n  {% for r in room_perf %}<tr><td><b>{{r.room}}</b></td><td>{{r.zone}}</td><td>{{r.calls}}</td><td>{{r.avg_response}}</td><td>{{r.over_sla}}</td></tr>{% endfor %}\n  {% if not room_perf %}<tr><td colspan=\"5\" class=\"muted\">No calls in this period.</td></tr>{% endif %}\n  </tbody></table></div>\n</section>\n</div>\n\n<section class=\"panel management-call-table\">\n  <div class=\"section-head\"><div><h2>Call Lifecycle</h2><p class=\"muted\">{{range_label}} · Created → Acknowledged → Arrived → Resolved</p></div></div>\n  <div class=\"table-wrap\"><table><thead><tr><th>Room</th><th>Created</th><th>Primary nurse</th><th>Status</th><th>Response</th><th>Total duration</th><th>Escalated</th><th>Takeover</th><th>Reason</th></tr></thead><tbody>\n  {% for c in call_rows %}<tr><td><b>{{c.room}}</b><br><small>{{c.zone}}</small></td><td>{{c.created}}</td><td>{{c.nurse}}</td><td><span class=\"badge {{c.status}}\">{{c.status_label}}</span></td><td>{{c.response}}</td><td>{{c.duration}}</td><td>{{c.escalated}}</td><td>{{c.takeover}}</td><td>{{c.reason}}</td></tr>{% endfor %}\n  {% if not call_rows %}<tr><td colspan=\"9\" class=\"muted\">No calls in this period.</td></tr>{% endif %}\n  </tbody></table></div>\n</section>\n{% endblock %}",
@@ -67,9 +67,10 @@ APP_CSS += ".manager-export-actions{display:flex;gap:8px;flex-wrap:wrap}.manager
 APP_CSS += ".wall-room-card.alert-acknowledged{border:2px solid #2e90fa;background:#eff8ff;animation:none;box-shadow:0 6px 18px rgba(46,144,250,.12)}.wall-room-card.alert-acknowledged .wall-badge{background:#d1e9ff!important;color:#175cd3!important}"
 APP_CSS += ".password-wrap{position:relative}.password-wrap input{padding-right:46px!important;width:100%}.password-eye{position:absolute;right:7px;top:50%;transform:translateY(-50%);border:0;background:transparent;cursor:pointer;font-size:18px;padding:7px;border-radius:8px}.password-eye:hover{background:#eef4fb}.login-security-note{margin-top:14px;padding:10px 12px;border-radius:10px;background:#eff8ff;color:#175cd3;font-size:12px}.notify-setup-shell{min-height:72vh;display:grid;place-items:center;padding:24px}.notify-setup-card{width:min(620px,100%);background:#fff;border:1px solid #d8e2ed;border-radius:18px;padding:28px;box-shadow:0 18px 50px rgba(16,42,67,.10)}.notify-setup-card h1{margin:6px 0}.notify-steps{display:grid;gap:9px;margin:16px 0}.notify-step{display:grid;grid-template-columns:34px 1fr auto;gap:10px;align-items:center;padding:11px;border:1px solid #d8e2ed;border-radius:12px;background:#f8fafc}.notify-step .step-dot{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:#e4e7ec;font-weight:900}.notify-step div{display:grid}.notify-step small{color:#667085}.notify-step .step-state{font-size:11px;font-weight:850;color:#667085}.notify-step.working{border-color:#84adff;background:#f5f8ff}.notify-step.ok{border-color:#75e0a7;background:#ecfdf3}.notify-step.ok .step-dot{background:#12b76a;color:#fff}.notify-step.bad{border-color:#fda29b;background:#fef3f2}.notify-step.bad .step-dot{background:#d92d20;color:#fff}.notify-status{padding:11px 12px;margin:12px 0;border-radius:10px;background:#f2f4f7;font-weight:700;font-size:13px}.notify-device{display:grid;grid-template-columns:110px 1fr;gap:5px 10px;margin-top:16px;padding:12px;border-top:1px solid #eaecf0;font-size:12px}.notify-device span{color:#667085}.notify-help{font-size:11px;margin-top:12px}.alert.success{background:#dcfae6;color:#067647;border:1px solid #abefc6}"
 APP_CSS += ".notify-setup-card{width:min(720px,100%)}.notify-progress{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:14px 0}.notify-chip{min-height:38px;border:1px solid #cfd8e3;border-radius:999px;padding:7px 9px;display:grid;grid-template-columns:10px 1fr;grid-template-areas:\"dot title\" \"state state\";align-items:center;column-gap:6px;background:#fff;font-size:10px;text-align:center}.notify-chip .chip-dot{grid-area:dot;width:8px;height:8px;border-radius:50%;background:#98a2b3}.notify-chip b{grid-area:title;font-size:10px;white-space:nowrap}.notify-chip .step-state{grid-area:state;font-size:9px;color:#667085;margin-top:2px}.notify-chip.working{border-color:#84adff;background:#f5f8ff}.notify-chip.working .chip-dot{background:#2e90fa}.notify-chip.ok{border-color:#75e0a7;background:#ecfdf3}.notify-chip.ok .chip-dot{background:#12b76a}.notify-chip.bad{border-color:#fda29b;background:#fef3f2}.notify-chip.bad .chip-dot{background:#d92d20}@media(max-width:650px){.notify-progress{grid-template-columns:repeat(2,1fr)}}"
+APP_CSS += ".notify-mini-shell{width:min(560px,calc(100% - 24px));margin:28px auto}.notify-mini-card{border:1.5px solid #7db4ff;border-radius:12px;background:#f8fbff;padding:10px 12px}.notify-mini-title{font-size:12px;color:#0b2a4a;margin-bottom:3px}.notify-mini-sub{font-size:9px;font-weight:700;color:#475467;margin-bottom:9px}.notify-mini-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.notify-mini-chip{min-width:0;border:1px solid #cfd8e3;border-radius:999px;background:#fff;padding:5px 7px;display:grid;grid-template-columns:8px 1fr;grid-template-areas:\"dot title\" \"dot state\";column-gap:5px;align-items:center;text-align:center}.notify-mini-chip .chip-dot{grid-area:dot;width:7px;height:7px;border-radius:50%;background:#98a2b3}.notify-mini-chip b{grid-area:title;font-size:8px;white-space:nowrap}.notify-mini-chip small{grid-area:state;font-size:7px;color:#667085;white-space:nowrap}.notify-mini-chip.working{border-color:#84adff;background:#f5f8ff}.notify-mini-chip.working .chip-dot{background:#2e90fa}.notify-mini-chip.ok{border-color:#75e0a7;background:#ecfdf3}.notify-mini-chip.ok .chip-dot{background:#12b76a}.notify-mini-chip.bad{border-color:#fda29b;background:#fff1f0}.notify-mini-chip.bad .chip-dot{background:#d92d20}.notify-mini-status{margin:8px 0 7px;padding:7px 9px;border-radius:8px;background:#f2f4f7;font-size:9px;font-weight:750;color:#344054}.notify-verify-btn{width:100%;border:0;border-radius:8px;padding:9px 12px;background:linear-gradient(90deg,#2468e8,#0795ad);color:white;font-size:11px;font-weight:850;cursor:pointer}.notify-verify-btn.ready{background:linear-gradient(90deg,#079455,#12b76a)}.notify-platform-hint{margin:7px 0;padding:7px 8px;border-radius:8px;background:#fff6ed;border:1px solid #fedf89;color:#93370d;font-size:8px;font-weight:700}@media(max-width:560px){.notify-mini-shell{margin:16px auto}.notify-mini-steps{grid-template-columns:repeat(2,1fr)}.notify-mini-title{font-size:11px}}"
 APP_JS = "function pad(v){return String(v).padStart(2,'0')}\nfunction updateTimers(){document.querySelectorAll('.timer[data-created]').forEach(el=>{const s=new Date(el.dataset.created);const stop=el.dataset.stop?new Date(el.dataset.stop).getTime():Date.now();const sec=Math.max(0,Math.floor((stop-s.getTime())/1000));el.textContent=`${pad(Math.floor(sec/60))}:${pad(sec%60)}`})}\nsetInterval(updateTimers,1000);updateTimers();\nasync function callAction(id,action){const r=await fetch(`/api/call/${id}/${action}`,{method:'POST'});if(r.ok) location.reload();else alert('Action could not be completed.');}\nasync function assignRoom(id,nurseId){if(!nurseId)return;const r=await fetch(`/api/room/${id}/assign`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nurse_id:nurseId})});if(r.ok)location.reload();}\nasync function reassignCall(id){const n=document.getElementById(`reassign-nurse-${id}`),rs=document.getElementById(`reassign-reason-${id}`);if(!n||!n.value){alert('Select a nurse.');return}if(!rs||!rs.value){alert('Select a reason.');return}const r=await fetch(`/api/call/${id}/reassign`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nurse_id:n.value,reason:rs.value})});const d=await r.json().catch(()=>({}));if(r.ok){alert('Call reassigned. Original timer preserved.');location.reload()}else alert(d.error||'Reassignment could not be completed.');}\nfunction urlBase64ToUint8Array(base64String){const padding='='.repeat((4-base64String.length%4)%4);const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');const raw=atob(base64);return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)))}\nasync function enablePush(){if(!('serviceWorker'in navigator)||!('PushManager'in window)){alert('Push notifications are not supported on this device.');return}const reg=await navigator.serviceWorker.register('/sw.js');const permission=await Notification.requestPermission();if(permission!=='granted'){alert('Notification permission was not granted.');return}const key=''+(window.VAPID_PUBLIC_KEY||'');if(!key){alert('Notifications are ready in-app. Configure VAPID keys on the server to activate background Web Push.');return}const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(key)});await fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});alert('Notifications enabled.');}\nif('serviceWorker'in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}\nasync function handoverRoom(roomId){const el=document.getElementById(`handover-${roomId}`);if(!el||!el.value)return;const r=await fetch('/api/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:roomId,to_nurse_id:el.value})});if(r.ok){alert('Handover request sent.');location.reload()}else alert('Handover could not be created.');}\nasync function acceptHandover(id){const r=await fetch(`/api/handover/${id}/accept`,{method:'POST'});if(r.ok)location.reload();else alert('Could not accept handover.');}\nasync function silentRefreshNow(selector,afterRefresh){\n  const current=document.querySelector(selector); if(!current)return false;\n  try{\n    const r=await fetch(location.href,{cache:'no-store',headers:{'X-Silent-Refresh':'1'}});\n    if(!r.ok)return false;\n    const html=await r.text(); const doc=new DOMParser().parseFromString(html,'text/html');\n    const next=doc.querySelector(selector); const live=document.querySelector(selector);\n    if(!next||!live)return false;\n    if((next.dataset.refreshKey||'')===(live.dataset.refreshKey||''))return false;\n    const y=window.scrollY; live.replaceWith(next); window.scrollTo(0,y); updateTimers();\n    if(typeof afterRefresh==='function')afterRefresh();\n    return true;\n  }catch(e){return false}\n}\nfunction startSilentRefresh(selector,ms,afterRefresh){\n  if(!selector)return; const key='silentRefresh:'+selector;\n  if(window[key])clearInterval(window[key]);\n  window[key]=setInterval(()=>silentRefreshNow(selector,afterRefresh),ms||3000);\n}\nfunction togglePassword(id,btn){const el=document.getElementById(id);if(!el)return;const show=el.type==='password';el.type=show?'text':'password';btn.textContent=show?'🙈':'👁';btn.setAttribute('aria-label',show?'Hide password':'Show password')}"
 MANIFEST_JSON = "{\"name\":\"Burjeel ED Smart Call\",\"short_name\":\"ED Call\",\"start_url\":\"/\",\"display\":\"standalone\",\"background_color\":\"#f3f6fa\",\"theme_color\":\"#0059ad\",\"icons\":[{\"src\":\"/static/icons/icon-192.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"},{\"src\":\"/static/icons/icon-512.png\",\"sizes\":\"512x512\",\"type\":\"image/png\"}]}"
-SERVICE_WORKER_JS = "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('push',event=>{let data={title:'Burjeel ED Call',body:'New call',url:'/nurse'};try{data={...data,...event.data.json()}}catch(e){}const task=(async()=>{await self.registration.showNotification(data.title,{body:data.body,icon:'/static/icons/icon-192.png',badge:'/static/icons/icon-192.png',vibrate:[300,120,300,120,500],requireInteraction:true,data:{url:data.url}});try{const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});windows.forEach(c=>c.postMessage({type:'PUSH_CONFIRMED',title:data.title}));}catch(e){}try{await fetch('/api/push/confirm-device',{method:'POST',credentials:'include'});}catch(e){}})();event.waitUntil(task)});self.addEventListener('notificationclick',event=>{event.notification.close();event.waitUntil(clients.openWindow(event.notification.data.url||'/nurse'))});"
+SERVICE_WORKER_JS = "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('push',event=>{let data={title:'Burjeel ED Call',body:'New call',url:'/nurse'};try{data={...data,...event.data.json()}}catch(e){}const task=(async()=>{if(data.verification_token){try{await fetch('/api/push/verify/'+encodeURIComponent(data.verification_token),{method:'POST',cache:'no-store'})}catch(e){}}await self.registration.showNotification(data.title,{body:data.body,icon:'/static/icons/icon-192.png',badge:'/static/icons/icon-192.png',vibrate:[300,120,300,120,500],requireInteraction:true,data:{url:data.url}})})();event.waitUntil(task)});self.addEventListener('notificationclick',event=>{event.notification.close();event.waitUntil(clients.openWindow(event.notification.data.url||'/nurse'))});"
 LOGO_PNG_B64 = "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"
 template_env = Environment(loader=DictLoader(TEMPLATES), autoescape=select_autoescape(['html','xml']))
 
@@ -106,6 +107,8 @@ class Handover(Base):
     __tablename__='handovers'; id=Column(Integer,primary_key=True); room_id=Column(Integer,ForeignKey('rooms.id'),nullable=False); from_nurse_id=Column(Integer,ForeignKey('users.id'),nullable=False); to_nurse_id=Column(Integer,ForeignKey('users.id'),nullable=False); status=Column(String(30),default='pending'); created_at=Column(DateTime(timezone=True),default=now_utc); accepted_at=Column(DateTime(timezone=True)); room=relationship('Room'); from_nurse=relationship('User',foreign_keys=[from_nurse_id]); to_nurse=relationship('User',foreign_keys=[to_nurse_id])
 class PushSubscription(Base):
     __tablename__='push_subscriptions'; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey('users.id'),nullable=False); endpoint=Column(Text,unique=True,nullable=False); payload=Column(Text,nullable=False); created_at=Column(DateTime(timezone=True),default=now_utc)
+class PushVerification(Base):
+    __tablename__='push_verifications'; id=Column(Integer,primary_key=True); token=Column(String(120),unique=True,nullable=False); user_id=Column(Integer,ForeignKey('users.id'),nullable=False); endpoint=Column(Text,nullable=False); created_at=Column(DateTime(timezone=True),default=now_utc,nullable=False); confirmed_at=Column(DateTime(timezone=True))
 
 Base.metadata.create_all(engine)
 
@@ -125,12 +128,15 @@ def require_role(request,db,roles):
 
 def ctx(request,db,**kwargs): return {'request':request,'current_user':current_user(request,db),'sla_seconds':SLA_SECONDS,'vapid_public_key':VAPID_PUBLIC_KEY,**kwargs}
 def log_action(db,action,detail='',call=None,room=None,user=None): db.add(AuditLog(action=action,detail=detail,call_id=call.id if call else None,room_id=(room.id if room else (call.room_id if call else None)),user_id=user.id if user else None))
-def send_push_to_user(db,user_id,title,body,url='/nurse'):
+def send_push_to_user(db,user_id,title,body,url='/nurse',extra=None,endpoint=None):
     if not(webpush and VAPID_PRIVATE_KEY): return {'sent':0,'mode':'in-app-fallback'}
-    sent=0
-    for sub in db.query(PushSubscription).filter_by(user_id=user_id).all():
+    sent=0; q=db.query(PushSubscription).filter_by(user_id=user_id)
+    if endpoint: q=q.filter_by(endpoint=endpoint)
+    data={'title':title,'body':body,'url':url}
+    if extra: data.update(extra)
+    for sub in q.all():
         try:
-            webpush(subscription_info=json.loads(sub.payload),data=json.dumps({'title':title,'body':body,'url':url}),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_SUBJECT}); sent+=1
+            webpush(subscription_info=json.loads(sub.payload),data=json.dumps(data),vapid_private_key=VAPID_PRIVATE_KEY,vapid_claims={'sub':VAPID_SUBJECT}); sent+=1
         except WebPushException: pass
     return {'sent':sent,'mode':'webpush'}
 def enforce_escalations(db):
@@ -182,484 +188,39 @@ def push_status(request:Request,db:Session=Depends(get_db)):
     return {'verified':bool(request.session.get('notification_verified')),'subscriptions':db.query(PushSubscription).filter_by(user_id=u.id).count(),'permission_required':u.role in ['nurse','charge']}
 
 @app.post('/api/push/test')
-def push_test(request:Request,db:Session=Depends(get_db)):
+async def push_test(request:Request,db:Session=Depends(get_db)):
     u=require_role(request,db,['nurse','charge','manager','ed_manager','admin'])
     if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
         return JSONResponse({'ok':False,'error':'VAPID push keys are not configured.'},503)
-    count=db.query(PushSubscription).filter_by(user_id=u.id).count()
-    if not count:return JSONResponse({'ok':False,'error':'No push subscription is registered for this device.'},409)
-    result=send_push_to_user(db,u.id,'Burjeel ED Call - Test Alert','Notification test successful. This device is ready for nurse calls.',role_home(u.role))
+    data=await request.json()
+    endpoint=str(data.get('endpoint','')).strip()
+    sub=db.query(PushSubscription).filter_by(user_id=u.id,endpoint=endpoint).first()
+    if not sub:return JSONResponse({'ok':False,'error':'This browser push subscription is not registered.'},409)
+    token=secrets.token_urlsafe(32)
+    db.query(PushVerification).filter(PushVerification.user_id==u.id,PushVerification.confirmed_at.is_(None)).delete(synchronize_session=False)
+    db.add(PushVerification(token=token,user_id=u.id,endpoint=endpoint));db.commit()
+    result=send_push_to_user(db,u.id,'Burjeel ED Call - Test Alert','Notification test successful. This device is ready for nurse calls.',role_home(u.role),extra={'verification_token':token,'verification':True},endpoint=endpoint)
     if result.get('sent',0)<1:return JSONResponse({'ok':False,'error':'Push service did not accept the test notification.'},502)
     log_action(db,'PUSH_TEST_SENT',f'Test notification sent to {u.name}',user=u);db.commit()
-    return {'ok':True,'sent':result.get('sent',0)}
+    return {'ok':True,'sent':result.get('sent',0),'verification_token':token}
 
-@app.post('/api/push/confirm-device')
-def push_confirm_device(request:Request,db:Session=Depends(get_db)):
+@app.post('/api/push/verify/{token}')
+def push_verify_callback(token:str,db:Session=Depends(get_db)):
+    rec=db.query(PushVerification).filter_by(token=token).first()
+    if not rec:return JSONResponse({'ok':False},404)
+    created=_aware(rec.created_at)
+    if created and (now_utc()-created).total_seconds()>300:return JSONResponse({'ok':False,'error':'Verification expired'},410)
+    if not rec.confirmed_at:rec.confirmed_at=now_utc();db.commit()
+    return {'ok':True}
+
+@app.get('/api/push/verification/{token}')
+def push_verification_status(token:str,request:Request,db:Session=Depends(get_db)):
     u=require_role(request,db,['nurse','charge','manager','ed_manager','admin'])
-    request.session['notification_verified']=True
-    log_action(db,'PUSH_DEVICE_CONFIRMED',f'Device confirmed for {u.name}',user=u);db.commit()
-    return {'ok':True,'verified':True}
-
-@app.get('/room/{token}',response_class=HTMLResponse)
-def patient_room(token:str,request:Request,db:Session=Depends(get_db)):
-    enforce_escalations(db); room=db.query(Room).filter_by(qr_token=token).first()
-    if not room: raise HTTPException(404)
-    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at.desc()).first()
-    lang=request.query_params.get('lang','en').lower()
-    if lang not in ['en','ar']: lang='en'
-    translations={
-      'en':{'page_title':'Call Nurse','help_title':'How can we help?','help_note':'Choose a reason, then tap the call button.','general':'General assistance','pain':'Pain','toilet':'Toilet assistance','medication':'IV / Medication','call_nurse':'CALL NURSE','call_active':'Call sent','wait_note':'Your nurse has been notified.','responded_note':'Your nurse has responded. The response timer is now stopped.','physical_note':'For urgent or life-threatening needs, use the physical emergency call bell immediately.','error':'Unable to send the call. Please use the physical call bell.'},
-      'ar':{'page_title':'استدعاء الممرضة','help_title':'كيف يمكننا مساعدتك؟','help_note':'اختر سبب النداء ثم اضغط زر استدعاء الممرضة.','general':'مساعدة عامة','pain':'ألم','toilet':'مساعدة للحمام','medication':'المحلول / الدواء','call_nurse':'استدعاء الممرضة','call_active':'تم إرسال النداء','wait_note':'تم إشعار الممرضة المسؤولة عن الغرفة.','responded_note':'استجابت الممرضة للنداء وتم إيقاف عداد الاستجابة.','physical_note':'للحالات العاجلة أو المهددة للحياة استخدم زر النداء الفعلي فورًا.','error':'تعذر إرسال النداء. يرجى استخدام زر النداء الفعلي.'}
-    }
-    status_en={'new':'Waiting for nurse','acknowledged':'Nurse acknowledged','escalated':'Escalated to nurse in charge','taken_over':'Nurse in charge responding','arrived':'Nurse arrived','resolved':'Resolved'}
-    status_ar={'new':'بانتظار استجابة الممرضة','acknowledged':'تم تأكيد النداء','escalated':'تم التصعيد إلى الممرضة المسؤولة','taken_over':'الممرضة المسؤولة تتولى النداء','arrived':'حضرت الممرضة','resolved':'تم إغلاق النداء'}
-    status=(status_ar if lang=='ar' else status_en).get(active.status if active else '',translations[lang]['call_active'])
-    refresh_key=('idle' if not active else f'{active.id}:{active.status}:{active.acknowledged_at.isoformat() if active.acknowledged_at else ""}:{active.arrived_at.isoformat() if active.arrived_at else ""}:{active.resolved_at.isoformat() if active.resolved_at else ""}')
-    return render_template('patient.html',ctx(request,db,room=room,active_call=active,lang=lang,t=translations[lang],status_label=status,refresh_key=refresh_key))
-@app.post('/api/room/{token}/call')
-async def patient_call(token:str,request:Request,db:Session=Depends(get_db)):
-    room=db.query(Room).filter_by(qr_token=token).first();
-    if not room: raise HTTPException(404)
-    if not room.occupied or not room.assigned_nurse_id: return JSONResponse({'ok':False,'error':'Room is not ready for digital call. Please use the physical call bell.'},409)
-    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).first()
-    if active:return {'ok':True,'call_id':active.id,'status':active.status,'duplicate':True}
-    data=await request.json(); c=Call(room_id=room.id,assigned_nurse_id=room.assigned_nurse_id,reason=data.get('reason','General assistance')); db.add(c); db.flush(); log_action(db,'CALL_CREATED',f'Patient call: {c.reason}',call=c); db.commit(); send_push_to_user(db,room.assigned_nurse_id,f'Call Bell - {room.code}',f'Patient requests {c.reason}','/nurse'); return {'ok':True,'call_id':c.id,'status':c.status}
-@app.get('/api/call/{call_id}/status')
-def call_status(call_id:int,db:Session=Depends(get_db)):
-    enforce_escalations(db); c=db.get(Call,call_id)
-    if not c: raise HTTPException(404)
-    return serialize_call(c)
-@app.get('/nurse',response_class=HTMLResponse)
-def nurse_page(request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge'])
-    if not request.session.get('notification_verified'): return RedirectResponse('/notification-setup',303)
-    enforce_escalations(db); rooms=db.query(Room).filter_by(assigned_nurse_id=u.id).order_by(Room.code).all(); calls=db.query(Call).filter_by(assigned_nurse_id=u.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at).all(); colleagues=db.query(User).filter(User.role=='nurse',User.id!=u.id).order_by(User.name).all(); pending=db.query(Handover).filter_by(to_nurse_id=u.id,status='pending').order_by(Handover.created_at.desc()).all(); return render_template('nurse.html',ctx(request,db,rooms=rooms,calls=calls,colleagues=colleagues,pending_handovers=pending))
-@app.get('/charge',response_class=HTMLResponse)
-def charge_page(request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['charge','manager','ed_manager','admin'])
-    if u.role=='charge' and not request.session.get('notification_verified'): return RedirectResponse('/notification-setup',303)
-    enforce_escalations(db)
-    calls=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at).all()
-    rooms=db.query(Room).order_by(Room.code).all()
-    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all()
-    call_key='|'.join(f'{c.id}:{c.status}:{c.assigned_nurse_id}:{c.taken_over_by_id or ""}:{c.acknowledged_at.isoformat() if c.acknowledged_at else ""}:{c.arrived_at.isoformat() if c.arrived_at else ""}' for c in calls)
-    room_key='|'.join(f'{r.id}:{r.assigned_nurse_id or ""}:{int(r.occupied)}' for r in rooms)
-    refresh_key=hashlib.sha256((call_key+'#'+room_key).encode()).hexdigest()[:20]
-    return render_template('charge.html',ctx(request,db,calls=calls,rooms=rooms,nurses=nurses,refresh_key=refresh_key))
-def _aware(dt):
-    if not dt: return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
-def _fmt_seconds(sec):
-    if sec is None: return '-'
-    sec=max(0,int(sec)); return f'{sec//60:02d}:{sec%60:02d}'
-
-def _management_range(request):
-    period=request.query_params.get('period','today')
-    now=now_utc()
-    if period=='week':
-        start=(now-timedelta(days=6)).replace(hour=0,minute=0,second=0,microsecond=0); end=now
-    elif period=='month':
-        start=now.replace(day=1,hour=0,minute=0,second=0,microsecond=0); end=now
-    elif period=='custom':
-        try:
-            start=datetime.strptime(request.query_params.get('from',''),'%Y-%m-%d').replace(tzinfo=timezone.utc)
-            end=datetime.strptime(request.query_params.get('to',''),'%Y-%m-%d').replace(tzinfo=timezone.utc)+timedelta(days=1)-timedelta(microseconds=1)
-        except Exception:
-            period='today'; start=now.replace(hour=0,minute=0,second=0,microsecond=0); end=now
-    else:
-        period='today'; start=now.replace(hour=0,minute=0,second=0,microsecond=0); end=now
-    return period,start,end
-
-def _management_data(request,db):
-    period,start,end=_management_range(request)
-    calls=db.query(Call).filter(Call.created_at>=start,Call.created_at<=end).order_by(Call.created_at.desc()).all()
-    call_rows=[]; response_secs=[]; completed_secs=[]
-    nurse_map={}; room_map={}
-    for c in calls:
-        created=_aware(c.created_at); ack=_aware(c.acknowledged_at); arrived=_aware(c.arrived_at); resolved=_aware(c.resolved_at)
-        response_end=arrived or resolved
-        response=(response_end-created).total_seconds() if response_end and created else None
-        duration=(resolved-created).total_seconds() if resolved and created else None
-        if response is not None: response_secs.append(response)
-        if duration is not None: completed_secs.append(duration)
-        nurse_name=c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'
-        room_code=c.room.code if c.room else '-'; zone=c.room.zone if c.room else '-'
-        call_rows.append({'id':c.id,'room':room_code,'zone':zone,'created':created.strftime('%Y-%m-%d %H:%M:%S') if created else '-','nurse':nurse_name,'status':c.status,'status_label':c.status.replace('_',' ').title(),'response':_fmt_seconds(response),'response_seconds':response,'duration':_fmt_seconds(duration),'duration_seconds':duration,'escalated':'Yes' if c.escalated_at else 'No','takeover':c.taken_over_by.name if c.taken_over_by else '-','reason':c.reason,'acknowledged':ack.strftime('%Y-%m-%d %H:%M:%S') if ack else '-','arrived':arrived.strftime('%Y-%m-%d %H:%M:%S') if arrived else '-','resolved':resolved.strftime('%Y-%m-%d %H:%M:%S') if resolved else '-'})
-        nm=nurse_map.setdefault(nurse_name,{'name':nurse_name,'calls':0,'responses':[],'over_sla':0,'escalated':0})
-        nm['calls']+=1
-        if response is not None: nm['responses'].append(response)
-        if response is not None and response>SLA_SECONDS: nm['over_sla']+=1
-        if c.escalated_at: nm['escalated']+=1
-        rm=room_map.setdefault(room_code,{'room':room_code,'zone':zone,'calls':0,'responses':[],'over_sla':0})
-        rm['calls']+=1
-        if response is not None: rm['responses'].append(response)
-        if response is not None and response>SLA_SECONDS: rm['over_sla']+=1
-    nurse_perf=[]
-    for n in nurse_map.values():
-        avg=sum(n['responses'])/len(n['responses']) if n['responses'] else None
-        nurse_perf.append({'name':n['name'],'calls':n['calls'],'avg_response':_fmt_seconds(avg),'avg_seconds':avg,'over_sla':n['over_sla'],'escalated':n['escalated']})
-    nurse_perf.sort(key=lambda x:(-x['calls'],x['name']))
-    room_perf=[]
-    for r in room_map.values():
-        avg=sum(r['responses'])/len(r['responses']) if r['responses'] else None
-        room_perf.append({'room':r['room'],'zone':r['zone'],'calls':r['calls'],'avg_response':_fmt_seconds(avg),'avg_seconds':avg,'over_sla':r['over_sla']})
-    room_perf.sort(key=lambda x:(-x['calls'],x['room']))
-    avg=sum(response_secs)/len(response_secs) if response_secs else None
-    median=None
-    if response_secs:
-        vals=sorted(response_secs); mid=len(vals)//2
-        median=vals[mid] if len(vals)%2 else (vals[mid-1]+vals[mid])/2
-    over2=sum(1 for x in response_secs if x>120); over5=sum(1 for x in response_secs if x>300)
-    sla_ok=sum(1 for x in response_secs if x<=SLA_SECONDS)
-    sla_rate=f'{(sla_ok/len(response_secs)*100):.1f}%' if response_secs else '-'
-    kpi={'total':len(calls),'avg_response':_fmt_seconds(avg),'median_response':_fmt_seconds(median),'over_2m':over2,'over_5m':over5,'escalations':sum(1 for c in calls if c.escalated_at),'takeovers':sum(1 for c in calls if c.taken_over_by_id),'sla_rate':sla_rate}
-    handovers=db.query(Handover).filter(Handover.created_at>=start,Handover.created_at<=end).order_by(Handover.created_at.desc()).all()
-    audits=db.query(AuditLog).filter(AuditLog.created_at>=start,AuditLog.created_at<=end).order_by(AuditLog.created_at.desc()).all()
-    filter_qs=f'period={period}'
-    from_date=request.query_params.get('from',''); to_date=request.query_params.get('to','')
-    if period=='custom' and from_date and to_date: filter_qs+=f'&from={from_date}&to={to_date}'
-    range_label=f'{start.strftime("%Y-%m-%d")} to {end.strftime("%Y-%m-%d")}'
-    return {'period':period,'start':start,'end':end,'calls':calls,'call_rows':call_rows,'nurse_perf':nurse_perf,'room_perf':room_perf,'kpi':kpi,'handovers':handovers,'audits':audits,'filter_qs':filter_qs,'from_date':from_date,'to_date':to_date,'range_label':range_label}
-
-@app.get('/manager',response_class=HTMLResponse)
-def manager_page(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['manager','ed_manager','admin']); enforce_escalations(db)
-    d=_management_data(request,db)
-    return render_template('manager.html',ctx(request,db,**d))
-
-@app.get('/manager/export.xlsx')
-def manager_export_excel(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['manager','ed_manager','admin']); d=_management_data(request,db)
-    wb=Workbook(); ws=wb.active; ws.title='Executive Dashboard'
-    navy='0B2A4A'; blue='0B67C2'; light='EAF2FB'; green='D1FADF'; amber='FEF0C7'; red='FEE4E2'; white='FFFFFF'
-    thin=Side(style='thin',color='D0D5DD')
-    ws['A1']='Burjeel ED Smart Call Bell - Executive KPI Dashboard'; ws['A1'].font=Font(size=16,bold=True,color=white); ws['A1'].fill=PatternFill('solid',fgColor=navy); ws.merge_cells('A1:F1')
-    ws['A2']='Reporting period'; ws['B2']=d['range_label']; ws['A3']='Generated UTC'; ws['B3']=now_utc().strftime('%Y-%m-%d %H:%M:%S')
-    metrics=[('Total Calls',d['kpi']['total']),('Average Response',d['kpi']['avg_response']),('Median Response',d['kpi']['median_response']),('Calls >2 min',d['kpi']['over_2m']),('Calls >5 min',d['kpi']['over_5m']),('Escalations',d['kpi']['escalations']),('Charge Takeovers',d['kpi']['takeovers']),('SLA Compliance',d['kpi']['sla_rate'])]
-    row=5
-    for label,value in metrics:
-        ws.cell(row=row,column=1,value=label).font=Font(bold=True); ws.cell(row=row,column=2,value=value); row+=1
-    ws['D5']='Calls by Room'; ws['D5'].font=Font(bold=True,color=white); ws['D5'].fill=PatternFill('solid',fgColor=blue); ws['E5']='Calls'; ws['E5'].font=Font(bold=True,color=white); ws['E5'].fill=PatternFill('solid',fgColor=blue)
-    for i,r in enumerate(d['room_perf'][:12],start=6): ws.cell(i,4,r['room']); ws.cell(i,5,r['calls'])
-    if d['room_perf']:
-        chart=BarChart(); chart.title='Call Volume by Room'; chart.y_axis.title='Calls'; chart.x_axis.title='Room'
-        chart.add_data(Reference(ws,min_col=5,min_row=5,max_row=5+min(12,len(d['room_perf']))),titles_from_data=True)
-        chart.set_categories(Reference(ws,min_col=4,min_row=6,max_row=5+min(12,len(d['room_perf'])))); chart.height=7; chart.width=12; ws.add_chart(chart,'G5')
-    for col in range(1,6): ws.column_dimensions[get_column_letter(col)].width=22
-
-    ws2=wb.create_sheet('Call Details')
-    headers=['Call ID','Room','Zone','Reason','Primary Nurse','Status','Created','Acknowledged','Arrived','Resolved','Response Time','Response Seconds','Total Duration','Duration Seconds','Escalated','Charge Takeover','SLA Status','Reassignment History']
-    ws2.append(headers)
-    for cell in ws2[1]: cell.font=Font(bold=True,color=white); cell.fill=PatternFill('solid',fgColor=navy); cell.alignment=Alignment(horizontal='center')
-    audit_by_call={}
-    for a in d['audits']:
-        if a.call_id: audit_by_call.setdefault(a.call_id,[]).append(f'{a.action}: {a.detail or ""}')
-    for c in d['call_rows']:
-        sla='Within SLA' if c['response_seconds'] is not None and c['response_seconds']<=SLA_SECONDS else ('Over SLA' if c['response_seconds'] is not None else 'Open/No arrival')
-        ws2.append([c['id'],c['room'],c['zone'],c['reason'],c['nurse'],c['status_label'],c['created'],c['acknowledged'],c['arrived'],c['resolved'],c['response'],c['response_seconds'],c['duration'],c['duration_seconds'],c['escalated'],c['takeover'],sla,' | '.join(audit_by_call.get(c['id'],[]))])
-    ws2.freeze_panes='A2'; ws2.auto_filter.ref=ws2.dimensions
-
-    ws3=wb.create_sheet('Nurse Performance'); ws3.append(['Nurse','Calls','Average Response','Average Seconds','Over SLA','Escalated'])
-    for n in d['nurse_perf']: ws3.append([n['name'],n['calls'],n['avg_response'],n['avg_seconds'],n['over_sla'],n['escalated']])
-    ws4=wb.create_sheet('Room Performance'); ws4.append(['Room','Zone','Calls','Average Response','Average Seconds','SLA Breaches'])
-    for r in d['room_perf']: ws4.append([r['room'],r['zone'],r['calls'],r['avg_response'],r['avg_seconds'],r['over_sla']])
-    ws5=wb.create_sheet('SLA & Escalation'); ws5.append(['Call ID','Room','Created','Response','Response Seconds','Escalated','Takeover','SLA Status'])
-    for c in d['call_rows']:
-        sla='Within SLA' if c['response_seconds'] is not None and c['response_seconds']<=SLA_SECONDS else ('Over SLA' if c['response_seconds'] is not None else 'Open/No arrival')
-        ws5.append([c['id'],c['room'],c['created'],c['response'],c['response_seconds'],c['escalated'],c['takeover'],sla])
-    ws6=wb.create_sheet('Handover'); ws6.append(['Room','From Nurse','To Nurse','Status','Created','Accepted'])
-    for h in d['handovers']: ws6.append([h.room.code,h.from_nurse.name,h.to_nurse.name,h.status,_aware(h.created_at).strftime('%Y-%m-%d %H:%M:%S') if h.created_at else '-',_aware(h.accepted_at).strftime('%Y-%m-%d %H:%M:%S') if h.accepted_at else '-'])
-    ws7=wb.create_sheet('Audit Summary'); ws7.append(['Time','Action','User','Room ID','Call ID','Detail'])
-    for a in d['audits']: ws7.append([_aware(a.created_at).strftime('%Y-%m-%d %H:%M:%S') if a.created_at else '-',a.action,a.user.name if a.user else '-',a.room_id,a.call_id,a.detail or ''])
-    for sheet in [ws3,ws4,ws5,ws6,ws7]:
-        for cell in sheet[1]: cell.font=Font(bold=True,color=white); cell.fill=PatternFill('solid',fgColor=navy)
-        sheet.freeze_panes='A2'; sheet.auto_filter.ref=sheet.dimensions
-    for sheet in wb.worksheets:
-        for row_cells in sheet.iter_rows():
-            for cell in row_cells:
-                cell.border=Border(bottom=thin); cell.alignment=Alignment(vertical='top')
-        for column in range(1,min(sheet.max_column,18)+1):
-            max_len=max([len(str(sheet.cell(r,column).value or '')) for r in range(1,min(sheet.max_row,200)+1)] or [10]); sheet.column_dimensions[get_column_letter(column)].width=min(max(max_len+2,11),36)
-    out=io.BytesIO(); wb.save(out); out.seek(0)
-    filename=f'Burjeel_ED_Call_Bell_KPI_{d["period"]}_{now_utc().strftime("%Y%m%d_%H%M")}.xlsx'
-    return Response(out.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
-
-@app.get('/manager/export.pdf')
-def manager_export_pdf(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['manager','ed_manager','admin']); d=_management_data(request,db)
-    out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=landscape(A4),rightMargin=24,leftMargin=24,topMargin=24,bottomMargin=24); styles=getSampleStyleSheet(); story=[]
-    story.append(Paragraph('Burjeel ED Smart Call Bell - KPI Management Report',styles['Title'])); story.append(Paragraph(d['range_label'],styles['Normal'])); story.append(Spacer(1,10))
-    k=d['kpi']; kdata=[['KPI','Value'],['Total Calls',k['total']],['Average Response',k['avg_response']],['Median Response',k['median_response']],['Calls >2 min',k['over_2m']],['Calls >5 min',k['over_5m']],['Escalations',k['escalations']],['Charge Takeovers',k['takeovers']],['SLA Compliance',k['sla_rate']]]
-    kt=Table(kdata,colWidths=[180,100]); kt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B2A4A')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,colors.HexColor('#F8FAFC')]),('PADDING',(0,0),(-1,-1),5)])); story.append(kt); story.append(Spacer(1,12))
-    story.append(Paragraph('Nurse Performance',styles['Heading2']))
-    ndata=[['Nurse','Calls','Avg Response','Over SLA','Escalated']]+[[n['name'],n['calls'],n['avg_response'],n['over_sla'],n['escalated']] for n in d['nurse_perf']]
-    nt=Table(ndata,repeatRows=1); nt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B67C2')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('PADDING',(0,0),(-1,-1),4)])); story.append(nt); story.append(Spacer(1,12))
-    story.append(Paragraph('Recent Call Lifecycle',styles['Heading2']))
-    cdata=[['Room','Created','Nurse','Status','Response','Escalated','Takeover','Reason']]+[[c['room'],c['created'],c['nurse'],c['status_label'],c['response'],c['escalated'],c['takeover'],c['reason']] for c in d['call_rows'][:60]]
-    ct=Table(cdata,repeatRows=1,colWidths=[50,100,80,70,55,55,75,110]); ct.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B2A4A')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('FONTSIZE',(0,0),(-1,-1),7),('PADDING',(0,0),(-1,-1),3)])); story.append(ct)
-    doc.build(story); out.seek(0)
-    filename=f'Burjeel_ED_Call_Bell_KPI_{d["period"]}_{now_utc().strftime("%Y%m%d_%H%M")}.pdf'
-    return Response(out.getvalue(),media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
-
-def wallboard_payload(db:Session):
-    enforce_escalations(db)
-    active_status=['new','acknowledged','escalated','taken_over','arrived']
-    calls=db.query(Call).filter(Call.status.in_(active_status)).order_by(Call.created_at).all()
-    now=now_utc(); call_out=[]; call_by_room={}
-    for c in calls:
-        created=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
-        elapsed=max(0,int((now-created).total_seconds())) if created else 0
-        if c.status=='taken_over': alert_stage='takeover'
-        elif c.status=='arrived': alert_stage='arrived'
-        elif c.status=='acknowledged': alert_stage='acknowledged'
-        elif c.status=='escalated': alert_stage='critical'
-        elif elapsed<=SLA_SECONDS: alert_stage='fresh'
-        elif elapsed<=SLA_SECONDS*2: alert_stage='warning'
-        else: alert_stage='critical'
-        item={'id':c.id,'room':c.room.code,'room_id':c.room_id,'zone':c.room.zone,'status':c.status,'reason':c.reason,'nurse':c.assigned_nurse.name if c.assigned_nurse else 'Unassigned','takeover':c.taken_over_by.name if c.taken_over_by else None,'elapsed_seconds':elapsed,'elapsed_label':f'{elapsed//60:02d}:{elapsed%60:02d}','created_at':created.isoformat() if created else '','over_sla':c.status in ['new','acknowledged','escalated'] and elapsed>SLA_SECONDS,'alert_stage':alert_stage}
-        call_out.append(item); call_by_room[c.room_id]=item
-    rooms=db.query(Room).order_by(Room.zone,Room.code).all(); rooms_view=[]
-    for r in rooms:
-        c=call_by_room.get(r.id)
-        if c: rooms_view.append(dict(c))
-        else: rooms_view.append({'id':None,'room':r.code,'room_id':r.id,'zone':r.zone,'status':'ready' if r.occupied else 'closed','reason':'Ready' if r.occupied else 'Closed','nurse':r.assigned_nurse.name if r.assigned_nurse else 'Unassigned','takeover':None,'elapsed_seconds':0,'elapsed_label':'--:--','created_at':'','over_sla':False,'alert_stage':'idle'})
-    recent_calls=db.query(Call).filter(Call.resolved_at.isnot(None)).order_by(Call.resolved_at.desc()).limit(6).all()
-    recent=[]
-    for c in recent_calls:
-        s=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
-        e=c.arrived_at or c.resolved_at; e=e.replace(tzinfo=timezone.utc) if e and e.tzinfo is None else e
-        sec=max(0,int((e-s).total_seconds())) if s and e else 0
-        recent.append({'room':c.room.code,'response':f'{sec//60:02d}:{sec%60:02d}','nurse':(c.taken_over_by.name if c.taken_over_by else (c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'))})
-    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all(); workload=[]
-    for n in nurses:
-        workload.append({'name':n.name,'rooms':db.query(Room).filter_by(assigned_nurse_id=n.id,occupied=True).count(),'active':sum(1 for c in calls if c.assigned_nurse_id==n.id)})
-    hs=db.query(Handover).filter_by(status='pending').order_by(Handover.created_at.desc()).limit(8).all()
-    handovers=[{'room':h.room.code,'from_nurse':h.from_nurse.name,'to_nurse':h.to_nurse.name} for h in hs]
-    rt=[]
-    for c in recent_calls:
-        if c.created_at and (c.arrived_at or c.resolved_at):
-            s=c.created_at.replace(tzinfo=timezone.utc) if c.created_at.tzinfo is None else c.created_at; e=c.arrived_at or c.resolved_at; e=e.replace(tzinfo=timezone.utc) if e.tzinfo is None else e; rt.append((e-s).total_seconds())
-    avg=int(sum(rt)/len(rt)) if rt else 0
-    stats={'total_rooms':len(rooms),'active':len(calls),'escalated':sum(1 for c in calls if c.status=='escalated'),'over_sla':sum(1 for c in call_out if c['over_sla']),'avg_response':f'{avg//60:02d}:{avg%60:02d}','unassigned':db.query(Room).filter(Room.occupied==True,Room.assigned_nurse_id.is_(None)).count()}
-    return {'calls':call_out,'rooms_view':rooms_view,'recent':recent,'workload':workload,'handovers':handovers,'stats':stats,'zones':[z[0] for z in db.query(Room.zone).distinct().order_by(Room.zone).all()]}
-
-@app.get('/wallboard',response_class=HTMLResponse)
-def wallboard_page(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['nurse','charge','manager','ed_manager','admin'])
-    lang=request.query_params.get('lang','en').lower()
-    if lang not in ['en','ar']: lang='en'
-    p=wallboard_payload(db)
-    i18n={
-      'en':{'kicker':'Nurse Station Wallboard','title':'ED Live Call Board','subtitle':'Room calls, SLA escalation, nurse workload and handover status.','enable_sound':'Enable sound','sound_on':'Sound on','tap_sound':'Tap for sound','fullscreen':'Full screen','total_rooms':'Rooms','active_calls':'Active calls','escalated':'Escalated','over_sla':'Over SLA','avg_response':'Avg response','unassigned':'Unassigned rooms','all':'All','connected':'Connected','disconnected':'Offline','no_calls':'No active call bell requests','assigned_nurse':'Assigned nurse','elapsed':'Elapsed','charge_takeover':'Charge takeover','nurse_workload':'Nurse workload','pending_handover':'Pending handover','recent_resolved':'Recent resolved','rooms':'rooms','calls':'calls','none':'None','compact':'Compact','cards':'Cards','list':'List','zones':'Zones','show_idle':'Show ready rooms','legend_green':'0–2 min','legend_amber':'2–4 min','legend_red':'4+ min / escalated','legend_blue':'Charge takeover','status':{'new':'NEW CALL','acknowledged':'ACKNOWLEDGED','escalated':'ESCALATED','taken_over':'CHARGE TAKEOVER','arrived':'ARRIVED','ready':'READY','closed':'CLOSED'},'reason':{'General assistance':'General assistance','Pain':'Pain','Toilet assistance':'Toilet assistance','IV / Medication':'IV / Medication','Ready':'Ready','Closed':'Closed'}},
-      'ar':{'kicker':'شاشة محطة التمريض','title':'لوحة نداءات الطوارئ المباشرة','subtitle':'نداءات الغرف والتصعيد وعبء التمريض وحالات التسليم.','enable_sound':'تفعيل الصوت','sound_on':'الصوت مفعل','tap_sound':'اضغط لتفعيل الصوت','fullscreen':'ملء الشاشة','total_rooms':'الغرف','active_calls':'النداءات النشطة','escalated':'تم التصعيد','over_sla':'تجاوز الوقت','avg_response':'متوسط الاستجابة','unassigned':'غرف بدون ممرضة','all':'الكل','connected':'متصل','disconnected':'غير متصل','no_calls':'لا توجد نداءات نشطة','assigned_nurse':'الممرضة المسؤولة','elapsed':'الوقت','charge_takeover':'استلام مسؤول التمريض','nurse_workload':'عبء التمريض','pending_handover':'تسليمات معلقة','recent_resolved':'آخر النداءات المغلقة','rooms':'غرف','calls':'نداءات','none':'لا يوجد','compact':'مضغوط','cards':'بطاقات','list':'قائمة','zones':'مناطق','show_idle':'إظهار الغرف الجاهزة','legend_green':'0–2 دقيقة','legend_amber':'2–4 دقائق','legend_red':'4+ دقائق / تصعيد','legend_blue':'استلام مسؤول التمريض','status':{'new':'نداء جديد','acknowledged':'تم التأكيد','escalated':'تم التصعيد','taken_over':'استلام المسؤول','arrived':'تم الوصول','ready':'جاهزة','closed':'مغلقة'},'reason':{'General assistance':'مساعدة عامة','Pain':'ألم','Toilet assistance':'مساعدة للحمام','IV / Medication':'المحلول / الدواء','Ready':'جاهزة','Closed':'مغلقة'}}
-    }
-    t=i18n[lang]; calls=[]; rooms_view=[]
-    for c in p['calls']:
-        x=dict(c); x['status_label']=t['status'].get(c['status'],c['status']); x['reason_label']=t['reason'].get(c['reason'],c['reason']); calls.append(x)
-    for r in p['rooms_view']:
-        x=dict(r); x['status_label']=t['status'].get(r['status'],r['status']); x['reason_label']=t['reason'].get(r['reason'],r['reason']); rooms_view.append(x)
-    return render_template('wallboard.html',ctx(request,db,lang=lang,t=t,calls=calls,rooms_view=rooms_view,recent=p['recent'],workload=p['workload'],handovers=p['handovers'],stats=p['stats'],zones=p['zones'],wall_i18n_json=json.dumps(t,ensure_ascii=False),call_ids_json=json.dumps([c['id'] for c in p['calls']]),call_stages_json=json.dumps({str(c['id']):c['alert_stage'] for c in p['calls']})))
-
-@app.get('/api/wallboard')
-def wallboard_api(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['nurse','charge','manager','ed_manager','admin']); return wallboard_payload(db)
-
-@app.get('/admin',response_class=HTMLResponse)
-def admin_page(request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['admin'])
-    users=db.query(User).order_by(User.role,User.name).all()
-    rooms=db.query(Room).order_by(Room.code).all()
-    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all()
-    audit_logs=db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()
-    active_calls=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).count()
-    push_count=db.query(PushSubscription).count()
-    return render_template('admin.html',ctx(request,db,rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
-
-@app.post('/admin/users')
-async def admin_create_user(request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); form=await request.form()
-    name=str(form.get('name','')).strip(); email=str(form.get('email','')).strip().lower(); role=str(form.get('role','')).strip(); password=str(form.get('password',''))
-    if role not in ['nurse','charge','manager','ed_manager','admin'] or not name or not email or len(password)<8: raise HTTPException(400)
-    if db.query(User).filter_by(email=email).first(): return RedirectResponse('/admin#staff',303)
-    u=User(name=name,email=email,role=role,password_hash=pwd_hash(password),active=True); db.add(u); db.flush(); log_action(db,'ADMIN_USER_CREATED',f'{email} role={role}',user=admin); db.commit()
-    return RedirectResponse('/admin#staff',303)
-
-@app.post('/admin/users/{uid}/toggle')
-def admin_toggle_user(uid:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); u=db.get(User,uid)
-    if not u: raise HTTPException(404)
-    if u.id==admin.id: return RedirectResponse('/admin#staff',303)
-    u.active=not u.active; log_action(db,'ADMIN_USER_TOGGLED',f'{u.email} active={u.active}',user=admin); db.commit()
-    return RedirectResponse('/admin#staff',303)
-
-@app.post('/admin/users/{uid}/reset')
-async def admin_reset_password(uid:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); u=db.get(User,uid)
-    if not u: raise HTTPException(404)
-    form=await request.form(); password=str(form.get('password',''))
-    if len(password)<8: raise HTTPException(400)
-    u.password_hash=pwd_hash(password); log_action(db,'ADMIN_PASSWORD_RESET',u.email,user=admin); db.commit()
-    return RedirectResponse('/admin#staff',303)
-
-@app.post('/admin/rooms')
-async def admin_create_room(request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); form=await request.form()
-    code=str(form.get('code','')).strip().upper(); zone=str(form.get('zone','')).strip() or 'ED Main'; nurse_id=str(form.get('nurse_id','')).strip()
-    if not code or db.query(Room).filter_by(code=code).first(): return RedirectResponse('/admin#rooms',303)
-    nurse=db.get(User,int(nurse_id)) if nurse_id else None
-    if nurse and nurse.role!='nurse': nurse=None
-    room=Room(code=code,zone=zone,qr_token=secrets.token_urlsafe(18),occupied=True,assigned_nurse_id=nurse.id if nurse else None); db.add(room); db.flush(); log_action(db,'ADMIN_ROOM_CREATED',f'{code} zone={zone}',room=room,user=admin); db.commit()
-    return RedirectResponse('/admin#rooms',303)
-
-@app.post('/admin/rooms/{room_id}/edit')
-async def admin_edit_room(room_id:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    form=await request.form()
-    code=str(form.get('code','')).strip().upper()
-    zone=str(form.get('zone','')).strip()
-    if not code or not zone:
-        return RedirectResponse('/admin?room_msg=Room+name+and+zone+are+required&room_msg_type=error#rooms',303)
-    duplicate=db.query(Room).filter(Room.code==code,Room.id!=room.id).first()
-    if duplicate:
-        return RedirectResponse('/admin?room_msg=Room+name+already+exists&room_msg_type=error#rooms',303)
-    old_code,old_zone=room.code,room.zone
-    room.code=code; room.zone=zone
-    log_action(db,'ADMIN_ROOM_EDITED',f'{old_code}/{old_zone} -> {code}/{zone}',room=room,user=admin)
-    db.commit()
-    return RedirectResponse('/admin?room_msg=Room+updated+successfully#rooms',303)
-
-@app.post('/admin/rooms/{room_id}/delete')
-def admin_delete_room(room_id:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).first()
-    if active:
-        return RedirectResponse('/admin?room_msg=Cannot+delete+a+room+with+an+active+call&room_msg_type=error#rooms',303)
-    if db.query(Call).filter_by(room_id=room.id).first() or db.query(Handover).filter_by(room_id=room.id).first():
-        return RedirectResponse('/admin?room_msg=Room+has+call+or+handover+history.+Close+it+instead+to+preserve+audit+records&room_msg_type=error#rooms',303)
-    code,zone=room.code,room.zone
-    db.query(AuditLog).filter_by(room_id=room.id).update({AuditLog.room_id:None},synchronize_session=False)
-    db.delete(room)
-    db.add(AuditLog(action='ADMIN_ROOM_DELETED',detail=f'{code} zone={zone}',user_id=admin.id))
-    db.commit()
-    return RedirectResponse('/admin?room_msg=Room+deleted+successfully#rooms',303)
-
-@app.get('/admin/rooms/{room_id}/qr',response_class=HTMLResponse)
-def admin_room_qr(room_id:int,request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    patient_url=str(request.base_url).rstrip('/')+f'/room/{room.qr_token}'
-    image=qrcode.make(patient_url,image_factory=qrcode.image.svg.SvgPathImage)
-    buf=io.BytesIO(); image.save(buf); qr_data=base64.b64encode(buf.getvalue()).decode('ascii')
-    auto_print=request.query_params.get('print')=='1'
-    return render_template('qr.html',ctx(request,db,room=room,qr_data=qr_data,patient_url=patient_url,auto_print=auto_print))
-
-@app.post('/admin/rooms/{room_id}/toggle')
-def admin_toggle_room(room_id:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    room.occupied=not room.occupied; log_action(db,'ADMIN_ROOM_TOGGLED',f'{room.code} occupied={room.occupied}',room=room,user=admin); db.commit()
-    return RedirectResponse('/admin#rooms',303)
-
-@app.post('/admin/rooms/{room_id}/assign')
-async def admin_assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    form=await request.form(); nurse_id=str(form.get('nurse_id','')).strip(); nurse=db.get(User,int(nurse_id)) if nurse_id else None
-    if nurse and nurse.role!='nurse': raise HTTPException(400)
-    old=room.assigned_nurse.name if room.assigned_nurse else 'Unassigned'; room.assigned_nurse_id=nurse.id if nurse else None
-    log_action(db,'ADMIN_ROOM_ASSIGNED',f'{room.code}: {old} -> {nurse.name if nurse else "Unassigned"}',room=room,user=admin); db.commit()
-    return RedirectResponse('/admin#rooms',303)
-
-@app.post('/admin/rooms/{room_id}/token')
-def admin_regenerate_room_token(room_id:int,request:Request,db:Session=Depends(get_db)):
-    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
-    if not room: raise HTTPException(404)
-    room.qr_token=secrets.token_urlsafe(18); log_action(db,'ADMIN_ROOM_TOKEN_REGENERATED',room.code,room=room,user=admin); db.commit()
-    return RedirectResponse('/admin#rooms',303)
-@app.post('/api/call/{call_id}/{action}')
-def call_action(call_id:int,action:str,request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); c=db.get(Call,call_id)
-    if not c: raise HTTPException(404)
-    if action=='ack':
-        if u.role=='nurse' and c.assigned_nurse_id!=u.id: raise HTTPException(403)
-        c.status='acknowledged'; c.acknowledged_at=c.acknowledged_at or now_utc(); log_action(db,'CALL_ACKNOWLEDGED',f'By {u.name}',call=c,user=u)
-    elif action=='takeover':
-        if u.role not in ['charge','manager','ed_manager','admin']: raise HTTPException(403)
-        c.status='taken_over'; c.taken_over_by_id=u.id
-        if not c.acknowledged_at: c.acknowledged_at=now_utc()
-        if not c.escalated_at:c.escalated_at=now_utc();c.escalation_reason='Charge nurse manual takeover'
-        log_action(db,'CALL_TAKEN_OVER',f'By {u.name}; primary={c.assigned_nurse.name if c.assigned_nurse else "Unassigned"}',call=c,user=u)
-    elif action=='arrive':
-        if not(u.id in [c.assigned_nurse_id,c.taken_over_by_id] or u.role in ['charge','manager','ed_manager','admin']): raise HTTPException(403)
-        c.status='arrived'; c.arrived_at=now_utc()
-        if not c.acknowledged_at: c.acknowledged_at=c.arrived_at
-        log_action(db,'NURSE_ARRIVED',f'By {u.name}',call=c,user=u)
-    elif action=='resolve':
-        if not(u.id in [c.assigned_nurse_id,c.taken_over_by_id] or u.role in ['charge','manager','ed_manager','admin']): raise HTTPException(403)
-        c.status='resolved'; c.resolved_at=now_utc(); log_action(db,'CALL_RESOLVED',f'By {u.name}',call=c,user=u)
-    else: raise HTTPException(400)
-    db.commit(); return {'ok':True,'call':serialize_call(c)}
-@app.post('/api/call/{call_id}/reassign')
-async def reassign_active_call(call_id:int,request:Request,db:Session=Depends(get_db)):
-    supervisor=require_role(request,db,['charge','manager','ed_manager','admin'])
-    c=db.get(Call,call_id)
-    if not c: raise HTTPException(404)
-    if c.status not in ['new','acknowledged','escalated','taken_over']:
-        return JSONResponse({'ok':False,'error':'Only an open call that has not reached Arrived can be reassigned.'},409)
-    data=await request.json()
-    try: nurse_id=int(data.get('nurse_id'))
-    except: return JSONResponse({'ok':False,'error':'Select a nurse.'},400)
-    reason=str(data.get('reason','')).strip()
-    if reason not in ['Workload balancing','Break','Shift change','No response','Clinical priority','Other']:
-        return JSONResponse({'ok':False,'error':'Select a valid reassignment reason.'},400)
-    nurse=db.get(User,nurse_id)
-    if not nurse or nurse.role!='nurse' or not nurse.active:
-        return JSONResponse({'ok':False,'error':'Selected nurse is not active.'},400)
-    if c.assigned_nurse_id==nurse.id:
-        return JSONResponse({'ok':False,'error':'This nurse is already assigned.'},409)
-    old_nurse=c.assigned_nurse
-    old_name=old_nurse.name if old_nurse else 'Unassigned'
-    old_id=c.assigned_nurse_id
-    c.assigned_nurse_id=nurse.id
-    c.room.assigned_nurse_id=nurse.id
-    if c.status in ['new','acknowledged']:
-        c.status='new'; c.acknowledged_at=None
-    elif c.status in ['escalated','taken_over']:
-        c.status='escalated'; c.taken_over_by_id=None
-    detail=f'{c.room.code}: {old_name} -> {nurse.name}; reason={reason}; by={supervisor.name}; original_call_time={c.created_at.isoformat()}'
-    log_action(db,'CALL_REASSIGNED',detail,room=c.room,call=c,user=supervisor)
-    db.commit()
-    send_push_to_user(db,nurse.id,f'Reassigned Call - {c.room.code}',f'{reason}. Patient call requires your response.','/nurse')
-    if old_id:
-        send_push_to_user(db,old_id,f'Call Reassigned - {c.room.code}',f'Call moved to {nurse.name} by {supervisor.name}.','/nurse')
-    return {'ok':True,'call':serialize_call(c),'from_nurse':old_name,'to_nurse':nurse.name,'reason':reason,'timer_preserved':True}
-
-@app.post('/api/room/{room_id}/assign')
-async def assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):
-    require_role(request,db,['charge','manager','ed_manager','admin']); data=await request.json(); room=db.get(Room,room_id); nurse=db.get(User,int(data['nurse_id']))
-    if not room or not nurse: raise HTTPException(404)
-    if nurse.role!='nurse': return JSONResponse({'ok':False,'error':'Only nurse users can be assigned'},400)
-    old=room.assigned_nurse; room.assigned_nurse_id=nurse.id; log_action(db,'ROOM_ASSIGNED',f'{room.code}: {old.name if old else "Unassigned"} -> {nurse.name}',room=room); db.commit(); return {'ok':True}
-
-@app.post('/api/handover')
-async def create_handover(request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); data=await request.json(); room=db.get(Room,int(data['room_id'])); to_nurse=db.get(User,int(data['to_nurse_id']))
-    if not room or not to_nurse: raise HTTPException(404)
-    if to_nurse.role!='nurse': return JSONResponse({'ok':False,'error':'Target must be a nurse'},400)
-    if u.role=='nurse' and room.assigned_nurse_id!=u.id: raise HTTPException(403)
-    existing=db.query(Handover).filter_by(room_id=room.id,status='pending').first()
-    if existing: return {'ok':True,'handover_id':existing.id,'duplicate':True}
-    h=Handover(room_id=room.id,from_nurse_id=room.assigned_nurse_id or u.id,to_nurse_id=to_nurse.id,status='pending'); db.add(h); db.flush(); log_action(db,'HANDOVER_CREATED',f'{room.code} -> {to_nurse.name}',room=room,user=u); db.commit(); send_push_to_user(db,to_nurse.id,f'Handover request - {room.code}',f'{u.name} requested room handover','/nurse'); return {'ok':True,'handover_id':h.id}
-
-@app.post('/api/handover/{hid}/accept')
-def accept_handover(hid:int,request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); h=db.get(Handover,hid)
-    if not h: raise HTTPException(404)
-    if u.role=='nurse' and h.to_nurse_id!=u.id: raise HTTPException(403)
-    h.status='accepted'; h.accepted_at=now_utc(); h.room.assigned_nurse_id=h.to_nurse_id; log_action(db,'HANDOVER_ACCEPTED',f'{h.room.code}: {h.from_nurse.name} -> {h.to_nurse.name}',room=h.room,user=u); db.commit(); return {'ok':True}
+    rec=db.query(PushVerification).filter_by(token=token,user_id=u.id).first()
+    if not rec:return JSONResponse({'ok':False,'verified':False},404)
+    verified=bool(rec.confirmed_at)
+    if verified:request.session['notification_verified']=True
+    return {'ok':True,'verified':verified}
 
 @app.post('/api/push/subscribe')
 async def push_subscribe(request:Request,db:Session=Depends(get_db)):
