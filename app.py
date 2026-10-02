@@ -17,7 +17,8 @@ except Exception:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_URL = os.getenv('DATABASE_URL', f"sqlite:///{os.path.join(BASE_DIR,'callbell.db')}")
-if DB_URL.startswith('postgres://'): DB_URL = DB_URL.replace('postgres://','postgresql://',1)
+if DB_URL.startswith('postgres://'): DB_URL = DB_URL.replace('postgres://','postgresql+psycopg://',1)
+if DB_URL.startswith('postgresql://'): DB_URL = DB_URL.replace('postgresql://','postgresql+psycopg://',1)
 engine = create_engine(DB_URL, connect_args={'check_same_thread':False} if DB_URL.startswith('sqlite') else {}, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 Base = declarative_base()
