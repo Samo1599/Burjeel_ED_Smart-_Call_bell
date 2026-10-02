@@ -1,4 +1,4 @@
-import os, json, hashlib, secrets, base64, io, re, traceback
+import os, json, hashlib, secrets, base64, io, re, traceback, asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import FastAPI, Request, Depends, HTTPException
@@ -310,15 +310,99 @@ def send_push_to_user(db,user_id,title,body,url='/nurse',extra=None,endpoint=Non
     for sub in stale: db.delete(sub)
     if stale: db.commit()
     return {'sent':sent,'mode':'webpush','errors':errors}
+NURSING_DELAY_STEP_SECONDS=120
+NURSING_DELAY_ACTIONS=[
+    ('NURSING_DELAY_SUPERVISOR_NOTIFIED','nurse_supervisor','Nurse Supervisor'),
+    ('NURSING_DELAY_MANAGER_NOTIFIED','manager','Nurse Manager'),
+    ('NURSING_DELAY_HOD_NOTIFIED','hod','HOD')
+]
+
+def _audit_for_call_action(db,call_id,action):
+    return db.query(AuditLog).filter_by(call_id=call_id,action=action).order_by(AuditLog.created_at.desc()).first()
+
+def _notify_nursing_delay_level(db,c,action,role,label,elapsed_seconds):
+    recipients=db.query(User).filter_by(role=role,active=True).all()
+    room=c.room.code if c.room else f'Room {c.room_id}'
+    nurse=c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'
+    minutes=max(1,int(elapsed_seconds//60))
+    title=f'Nursing response delay - {room}'
+    body=f'No nurse arrival after {minutes} minutes. Primary nurse: {nurse}. Management alert only; patient call remains with nursing.'
+    sent=0
+    for person in recipients:
+        result=send_push_to_user(db,person.id,title,body,role_home(person.role),extra={'kind':'nursing-delay','tag':f'nursing-delay-{c.id}-{role}','call_id':c.id,'room':room,'escalation_role':role})
+        sent+=int(result.get('sent',0))
+    detail=f'{label} notified for delayed nursing response; room={room}; nurse={nurse}; elapsed={minutes}m; recipients={len(recipients)}; push_sent={sent}'
+    log_action(db,action,detail,call=c,room=c.room)
+    return len(recipients),sent
+
 def enforce_escalations(db):
     changed=False
-    for c in db.query(Call).filter(Call.status.in_(['new','acknowledged'])).all():
+    now=now_utc()
+    active=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over'])).order_by(Call.created_at).all()
+    for c in active:
+        if c.arrived_at or c.resolved_at:
+            continue
         created=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
-        if c.status=='new' and created and (now_utc()-created).total_seconds()>=SLA_SECONDS:
-            c.status='escalated'; c.escalated_at=now_utc(); c.escalation_reason='Primary nurse did not acknowledge within SLA'; log_action(db,'CALL_ESCALATED',c.escalation_reason,call=c)
-            for charge in db.query(User).filter(User.role.in_(['charge','nurse_supervisor']),User.active==True).all(): send_push_to_user(db,charge.id,f'Escalated call - {c.room.code}','Primary nurse did not acknowledge within SLA','/charge')
+        if not created:
+            continue
+        elapsed=max(0,(now-created).total_seconds())
+
+        supervisor_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_SUPERVISOR_NOTIFIED')
+        manager_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_MANAGER_NOTIFIED')
+        hod_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_HOD_NOTIFIED')
+
+        if not supervisor_log and elapsed>=NURSING_DELAY_STEP_SECONDS:
+            if c.status in ['new','acknowledged']:
+                c.status='escalated'
+                c.escalated_at=c.escalated_at or now
+                c.escalation_reason='Nursing response delayed: nurse has not arrived within 2 minutes'
+            _notify_nursing_delay_level(db,c,'NURSING_DELAY_SUPERVISOR_NOTIFIED','nurse_supervisor','Nurse Supervisor',elapsed)
             changed=True
-    if changed: db.commit()
+            continue
+
+        if supervisor_log and not manager_log:
+            t=supervisor_log.created_at.replace(tzinfo=timezone.utc) if supervisor_log.created_at and supervisor_log.created_at.tzinfo is None else supervisor_log.created_at
+            if t and (now-t).total_seconds()>=NURSING_DELAY_STEP_SECONDS:
+                _notify_nursing_delay_level(db,c,'NURSING_DELAY_MANAGER_NOTIFIED','manager','Nurse Manager',elapsed)
+                changed=True
+                continue
+
+        if manager_log and not hod_log:
+            t=manager_log.created_at.replace(tzinfo=timezone.utc) if manager_log.created_at and manager_log.created_at.tzinfo is None else manager_log.created_at
+            if t and (now-t).total_seconds()>=NURSING_DELAY_STEP_SECONDS:
+                _notify_nursing_delay_level(db,c,'NURSING_DELAY_HOD_NOTIFIED','hod','HOD',elapsed)
+                changed=True
+                continue
+    if changed:
+        db.commit()
+
+async def nursing_delay_monitor_loop():
+    while True:
+        db=SessionLocal()
+        try:
+            enforce_escalations(db)
+        except Exception as exc:
+            db.rollback()
+            print(f'NURSING_DELAY_MONITOR_ERROR {type(exc).__name__}: {str(exc)[:300]}',flush=True)
+        finally:
+            db.close()
+        await asyncio.sleep(10)
+
+@app.on_event('startup')
+async def start_nursing_delay_monitor():
+    task=getattr(app.state,'nursing_delay_monitor_task',None)
+    if not task or task.done():
+        app.state.nursing_delay_monitor_task=asyncio.create_task(nursing_delay_monitor_loop())
+
+@app.on_event('shutdown')
+async def stop_nursing_delay_monitor():
+    task=getattr(app.state,'nursing_delay_monitor_task',None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 def _recall_state(db,c):
     logs=db.query(AuditLog).filter_by(call_id=c.id,action='PATIENT_RECALL').order_by(AuditLog.created_at.desc()).all()
     count=len(logs); last=logs[0].created_at if logs else c.created_at
@@ -496,7 +580,7 @@ def _perform_patient_recall(db,c):
     new_count=state['recall_count']+1
     log_action(db,'PATIENT_RECALL',f'{c.room.code}: patient re-call #{new_count}',call=c,room=c.room)
     if new_count>=3 and c.status!='taken_over':
-        c.status='escalated'; c.escalated_at=c.escalated_at or now_utc(); c.escalation_reason='Patient re-called 3 times without nurse arrival'
+        c.status='escalated'; c.escalated_at=c.escalated_at or now_utc(); c.escalation_reason='Patient re-called 3 times and nurse has not arrived'
     db.commit()
     if c.assigned_nurse_id:
         send_push_to_user(db,c.assigned_nurse_id,f'Re-call #{new_count} - {c.room.code}',f'Patient is still waiting: {c.reason}','/nurse',extra={'kind':'recall','tag':f'recall-{c.id}-{new_count}'})
