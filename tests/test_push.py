@@ -55,6 +55,40 @@ class PushTests(unittest.TestCase):
         for mode,expected in [('browser',True),('pwa',False)]:
             r=self.client.post('/api/push/device-status',json={'endpoint':ep,'device':{'display_mode':mode,'platform':'test'}})
             self.assertEqual(r.json()['verified'],expected)
+    def test_call_then_recalls_reach_each_endpoint_without_opening_pwa(self):
+        from datetime import timedelta
+        for mode in ['browser','pwa']:self.register(mode,'https://push.example/'+mode)
+        with app.SessionLocal() as db:
+            room=app.Room(code='RECALL-TEST',qr_token='recall-test-token',occupied=True,assigned_nurse_id=1)
+            db.add(room);db.commit()
+        clock=app.now_utc()
+        with patch.object(app,'now_utc',return_value=clock) as now,patch.object(app,'VAPID_PRIVATE_KEY','test'),patch.object(app,'webpush',return_value=SimpleNamespace(status_code=201)) as sender:
+            first=self.client.post('/api/room/recall-test-token/call',json={'reason':'General assistance'})
+            self.assertEqual(first.status_code,200);call_id=first.json()['call_id']
+            self.assertEqual(sender.call_count,2)
+            # There are no health/subscribe requests between the original call and recalls.
+            for number in [1,2,3]:
+                now.return_value=clock+timedelta(seconds=121*number)
+                r=self.client.post('/api/call/'+str(call_id)+'/recall')
+                self.assertEqual(r.status_code,200);self.assertEqual(r.json()['recall_count'],number)
+            messages=[json.loads(c.kwargs['data']) for c in sender.call_args_list if c.kwargs['subscription_info']['endpoint']=='https://push.example/pwa']
+            self.assertEqual(len(messages),4)
+            self.assertEqual(len({m['event_id'] for m in messages}),4)
+            self.assertEqual([m.get('tag') for m in messages[1:]],[f'recall-{call_id}-{i}' for i in [1,2,3]])
+            for m in messages:
+                signed=app.push_receipt_signer.loads(m['receipt_token'])
+                self.assertEqual(signed['event_id'],m['event_id'])
+                self.assertEqual(signed['endpoint_hash'],app.hashlib.sha256(b'https://push.example/pwa').hexdigest()[:12])
+            self.assertEqual(self.client.post('/api/call/'+str(call_id)+'/recall').status_code,409)
+    def test_signed_display_receipts_work_without_auth(self):
+        token=app.push_receipt_signer.dumps({'event_id':'event-test','user_id':1,'endpoint_hash':'hash-test','kind':'recall','sent_at_ms':1000})
+        with patch('builtins.print') as logs:
+            r=self.client.post('/api/push/receipt',json={'token':token,'received_at_ms':2000,'displayed_at_ms':2001})
+            self.assertEqual(r.status_code,204)
+            self.assertIn('WEBPUSH_DISPLAYED event=event-test kind=recall',logs.call_args.args[0])
+        self.assertEqual(self.client.post('/api/push/receipt',json={'token':token+'tampered','received_at_ms':2000,'displayed_at_ms':2001}).status_code,403)
+        self.assertEqual(self.client.post('/api/push/receipt',json={'token':token,'received_at_ms':2000,'displayed_at_ms':1999}).status_code,400)
+
     def test_assets_and_js_harness(self):
         self.assertEqual(self.client.get('/sw.js').headers['cache-control'],'no-cache')
         manifest=self.client.get('/manifest.webmanifest').json()

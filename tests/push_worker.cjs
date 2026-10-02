@@ -2,8 +2,8 @@ const vm=require('node:vm'),assert=require('node:assert/strict');
 let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()=>{
  try{
   const {sw,js}=JSON.parse(input);
-  const handlers={};let displayed=0,reported=0,task;
-  const context={self:{addEventListener:(n,f)=>handlers[n]=f,registration:{showNotification:async()=>{displayed++}}},AbortController,setTimeout,clearTimeout,
+  const handlers={};let displayed=0,reported=0,task;const shown=[];
+  const context={self:{addEventListener:(n,f)=>handlers[n]=f,registration:{showNotification:async(title,options)=>{displayed++;shown.push({title,options})}}},AbortController,setTimeout,clearTimeout,
    fetch:(_u,{signal})=>{reported++;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('timeout'))))}};
   vm.runInNewContext(sw,context);
   handlers.push({data:{json:()=>({verification_token:'test'})},waitUntil:p=>task=p});
@@ -11,6 +11,15 @@ let input='';process.stdin.on('data',s=>input+=s);process.stdin.on('end',async()
   assert.equal(displayed,1,'visible notification must precede a stalled verification fetch');assert.equal(reported,1);
   // Real call: no page/client is open and no fetch is required to display.
   handlers.push({data:{json:()=>({title:'Call',body:'Room 1'})},waitUntil:p=>task=p});await task;assert.equal(displayed,2);
+  // Independent real call / recall events render even when receipt networking stalls.
+  const pending=[];
+  for(const event of [{title:'First Call',kind:'call',event_id:'first',receipt_token:'signed-first'},{title:'Re-call #1',kind:'recall',tag:'recall-1-1',event_id:'second',receipt_token:'signed-second'}]){
+    handlers.push({data:{json:()=>event},waitUntil:p=>pending.push(p)});
+    await new Promise(r=>setImmediate(r));
+  }
+  assert.equal(displayed,4);assert.notEqual(shown[2].options.tag,shown[3].options.tag);
+  assert.equal(shown[3].options.data.event_id,'second');assert.equal(shown[3].options.silent,false);
+  await Promise.all(pending);
   const sub={endpoint:'https://push.example/pwa',options:{applicationServerKey:new Uint8Array([1])},toJSON(){return{endpoint:this.endpoint}},unsubscribe(){throw Error('must not unsubscribe when server row is missing')}};
   let registrations=0;
   const ready={pushManager:{getSubscription:async()=>sub,subscribe:async()=>{throw Error('must preserve live subscription')}}};
