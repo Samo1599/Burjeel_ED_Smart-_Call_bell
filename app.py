@@ -241,6 +241,483 @@ def push_verification_status(token:str,request:Request,db:Session=Depends(get_db
     if verified:request.session['notification_verified']=True
     return {'ok':True,'verified':verified}
 
+@app.get('/room/{token}',response_class=HTMLResponse)
+def patient_room(token:str,request:Request,db:Session=Depends(get_db)):
+    enforce_escalations(db); room=db.query(Room).filter_by(qr_token=token).first()
+    if not room: raise HTTPException(404)
+    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at.desc()).first()
+    lang=request.query_params.get('lang','en').lower()
+    if lang not in ['en','ar']: lang='en'
+    translations={
+      'en':{'page_title':'Call Nurse','help_title':'How can we help?','help_note':'Choose a reason, then tap the call button.','general':'General assistance','pain':'Pain','toilet':'Toilet assistance','medication':'IV / Medication','call_nurse':'CALL NURSE','call_active':'Call sent','wait_note':'Your nurse has been notified.','responded_note':'Your nurse has responded. The response timer is now stopped.','physical_note':'For urgent or life-threatening needs, use the physical emergency call bell immediately.','error':'Unable to send the call. Please use the physical call bell.'},
+      'ar':{'page_title':'استدعاء الممرضة','help_title':'كيف يمكننا مساعدتك؟','help_note':'اختر سبب النداء ثم اضغط زر استدعاء الممرضة.','general':'مساعدة عامة','pain':'ألم','toilet':'مساعدة للحمام','medication':'المحلول / الدواء','call_nurse':'استدعاء الممرضة','call_active':'تم إرسال النداء','wait_note':'تم إشعار الممرضة المسؤولة عن الغرفة.','responded_note':'استجابت الممرضة للنداء وتم إيقاف عداد الاستجابة.','physical_note':'للحالات العاجلة أو المهددة للحياة استخدم زر النداء الفعلي فورًا.','error':'تعذر إرسال النداء. يرجى استخدام زر النداء الفعلي.'}
+    }
+    status_en={'new':'Waiting for nurse','acknowledged':'Nurse acknowledged','escalated':'Escalated to nurse in charge','taken_over':'Nurse in charge responding','arrived':'Nurse arrived','resolved':'Resolved'}
+    status_ar={'new':'بانتظار استجابة الممرضة','acknowledged':'تم تأكيد النداء','escalated':'تم التصعيد إلى الممرضة المسؤولة','taken_over':'الممرضة المسؤولة تتولى النداء','arrived':'حضرت الممرضة','resolved':'تم إغلاق النداء'}
+    status=(status_ar if lang=='ar' else status_en).get(active.status if active else '',translations[lang]['call_active'])
+    refresh_key=('idle' if not active else f'{active.id}:{active.status}:{active.acknowledged_at.isoformat() if active.acknowledged_at else ""}:{active.arrived_at.isoformat() if active.arrived_at else ""}:{active.resolved_at.isoformat() if active.resolved_at else ""}')
+    return render_template('patient.html',ctx(request,db,room=room,active_call=active,lang=lang,t=translations[lang],status_label=status,refresh_key=refresh_key))
+@app.post('/api/room/{token}/call')
+async def patient_call(token:str,request:Request,db:Session=Depends(get_db)):
+    room=db.query(Room).filter_by(qr_token=token).first();
+    if not room: raise HTTPException(404)
+    if not room.occupied or not room.assigned_nurse_id: return JSONResponse({'ok':False,'error':'Room is not ready for digital call. Please use the physical call bell.'},409)
+    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).first()
+    if active:return {'ok':True,'call_id':active.id,'status':active.status,'duplicate':True}
+    data=await request.json(); c=Call(room_id=room.id,assigned_nurse_id=room.assigned_nurse_id,reason=data.get('reason','General assistance')); db.add(c); db.flush(); log_action(db,'CALL_CREATED',f'Patient call: {c.reason}',call=c); db.commit(); send_push_to_user(db,room.assigned_nurse_id,f'Call Bell - {room.code}',f'Patient requests {c.reason}','/nurse'); return {'ok':True,'call_id':c.id,'status':c.status}
+@app.get('/api/call/{call_id}/status')
+def call_status(call_id:int,db:Session=Depends(get_db)):
+    enforce_escalations(db); c=db.get(Call,call_id)
+    if not c: raise HTTPException(404)
+    return serialize_call(c)
+@app.get('/nurse',response_class=HTMLResponse)
+def nurse_page(request:Request,db:Session=Depends(get_db)):
+    u=require_role(request,db,['nurse','charge'])
+    if not request.session.get('notification_verified'): return RedirectResponse('/notification-setup',303)
+    enforce_escalations(db)
+    rooms=db.query(Room).filter_by(assigned_nurse_id=u.id).order_by(Room.code).all()
+    calls=db.query(Call).filter_by(assigned_nurse_id=u.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at).all()
+    colleagues=db.query(User).filter(User.role=='nurse',User.id!=u.id,User.active==True).order_by(User.name).all()
+    pending=db.query(Handover).filter_by(to_nurse_id=u.id,status='pending').order_by(Handover.created_at.desc()).all()
+    room_key='|'.join(f'{r.id}:{r.assigned_nurse_id}:{int(r.occupied)}' for r in rooms)
+    call_key='|'.join(f'{c.id}:{c.status}:{c.assigned_nurse_id}:{c.acknowledged_at.isoformat() if c.acknowledged_at else ""}:{c.arrived_at.isoformat() if c.arrived_at else ""}' for c in calls)
+    handover_key='|'.join(f'{h.id}:{h.status}:{h.room_id}:{h.from_nurse_id}:{h.to_nurse_id}' for h in pending)
+    refresh_key=hashlib.sha256((room_key+'#'+call_key+'#'+handover_key).encode()).hexdigest()[:20]
+    return render_template('nurse.html',ctx(request,db,rooms=rooms,calls=calls,colleagues=colleagues,pending_handovers=pending,refresh_key=refresh_key))
+
+@app.get('/charge',response_class=HTMLResponse)
+def charge_page(request:Request,db:Session=Depends(get_db)):
+    u=require_role(request,db,['charge','manager','ed_manager','admin'])
+    if u.role=='charge' and not request.session.get('notification_verified'): return RedirectResponse('/notification-setup',303)
+    enforce_escalations(db)
+    calls=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).order_by(Call.created_at).all()
+    rooms=db.query(Room).order_by(Room.code).all()
+    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all()
+    call_key='|'.join(f'{c.id}:{c.status}:{c.assigned_nurse_id}:{c.taken_over_by_id or ""}:{c.acknowledged_at.isoformat() if c.acknowledged_at else ""}:{c.arrived_at.isoformat() if c.arrived_at else ""}' for c in calls)
+    room_key='|'.join(f'{r.id}:{r.assigned_nurse_id or ""}:{int(r.occupied)}' for r in rooms)
+    refresh_key=hashlib.sha256((call_key+'#'+room_key).encode()).hexdigest()[:20]
+    return render_template('charge.html',ctx(request,db,calls=calls,rooms=rooms,nurses=nurses,refresh_key=refresh_key))
+def _aware(dt):
+    if not dt: return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+def _fmt_seconds(sec):
+    if sec is None: return '-'
+    sec=max(0,int(sec)); return f'{sec//60:02d}:{sec%60:02d}'
+
+def _management_range(request):
+    period=request.query_params.get('period','today')
+    now=now_utc()
+    if period=='week':
+        start=(now-timedelta(days=6)).replace(hour=0,minute=0,second=0,microsecond=0); end=now
+    elif period=='month':
+        start=now.replace(day=1,hour=0,minute=0,second=0,microsecond=0); end=now
+    elif period=='custom':
+        try:
+            start=datetime.strptime(request.query_params.get('from',''),'%Y-%m-%d').replace(tzinfo=timezone.utc)
+            end=datetime.strptime(request.query_params.get('to',''),'%Y-%m-%d').replace(tzinfo=timezone.utc)+timedelta(days=1)-timedelta(microseconds=1)
+        except Exception:
+            period='today'; start=now.replace(hour=0,minute=0,second=0,microsecond=0); end=now
+    else:
+        period='today'; start=now.replace(hour=0,minute=0,second=0,microsecond=0); end=now
+    return period,start,end
+
+def _management_data(request,db):
+    period,start,end=_management_range(request)
+    calls=db.query(Call).filter(Call.created_at>=start,Call.created_at<=end).order_by(Call.created_at.desc()).all()
+    call_rows=[]; response_secs=[]; completed_secs=[]
+    nurse_map={}; room_map={}
+    for c in calls:
+        created=_aware(c.created_at); ack=_aware(c.acknowledged_at); arrived=_aware(c.arrived_at); resolved=_aware(c.resolved_at)
+        response_end=arrived or resolved
+        response=(response_end-created).total_seconds() if response_end and created else None
+        duration=(resolved-created).total_seconds() if resolved and created else None
+        if response is not None: response_secs.append(response)
+        if duration is not None: completed_secs.append(duration)
+        nurse_name=c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'
+        room_code=c.room.code if c.room else '-'; zone=c.room.zone if c.room else '-'
+        call_rows.append({'id':c.id,'room':room_code,'zone':zone,'created':created.strftime('%Y-%m-%d %H:%M:%S') if created else '-','nurse':nurse_name,'status':c.status,'status_label':c.status.replace('_',' ').title(),'response':_fmt_seconds(response),'response_seconds':response,'duration':_fmt_seconds(duration),'duration_seconds':duration,'escalated':'Yes' if c.escalated_at else 'No','takeover':c.taken_over_by.name if c.taken_over_by else '-','reason':c.reason,'acknowledged':ack.strftime('%Y-%m-%d %H:%M:%S') if ack else '-','arrived':arrived.strftime('%Y-%m-%d %H:%M:%S') if arrived else '-','resolved':resolved.strftime('%Y-%m-%d %H:%M:%S') if resolved else '-'})
+        nm=nurse_map.setdefault(nurse_name,{'name':nurse_name,'calls':0,'responses':[],'over_sla':0,'escalated':0})
+        nm['calls']+=1
+        if response is not None: nm['responses'].append(response)
+        if response is not None and response>SLA_SECONDS: nm['over_sla']+=1
+        if c.escalated_at: nm['escalated']+=1
+        rm=room_map.setdefault(room_code,{'room':room_code,'zone':zone,'calls':0,'responses':[],'over_sla':0})
+        rm['calls']+=1
+        if response is not None: rm['responses'].append(response)
+        if response is not None and response>SLA_SECONDS: rm['over_sla']+=1
+    nurse_perf=[]
+    for n in nurse_map.values():
+        avg=sum(n['responses'])/len(n['responses']) if n['responses'] else None
+        nurse_perf.append({'name':n['name'],'calls':n['calls'],'avg_response':_fmt_seconds(avg),'avg_seconds':avg,'over_sla':n['over_sla'],'escalated':n['escalated']})
+    nurse_perf.sort(key=lambda x:(-x['calls'],x['name']))
+    room_perf=[]
+    for r in room_map.values():
+        avg=sum(r['responses'])/len(r['responses']) if r['responses'] else None
+        room_perf.append({'room':r['room'],'zone':r['zone'],'calls':r['calls'],'avg_response':_fmt_seconds(avg),'avg_seconds':avg,'over_sla':r['over_sla']})
+    room_perf.sort(key=lambda x:(-x['calls'],x['room']))
+    avg=sum(response_secs)/len(response_secs) if response_secs else None
+    median=None
+    if response_secs:
+        vals=sorted(response_secs); mid=len(vals)//2
+        median=vals[mid] if len(vals)%2 else (vals[mid-1]+vals[mid])/2
+    over2=sum(1 for x in response_secs if x>120); over5=sum(1 for x in response_secs if x>300)
+    sla_ok=sum(1 for x in response_secs if x<=SLA_SECONDS)
+    sla_rate=f'{(sla_ok/len(response_secs)*100):.1f}%' if response_secs else '-'
+    kpi={'total':len(calls),'avg_response':_fmt_seconds(avg),'median_response':_fmt_seconds(median),'over_2m':over2,'over_5m':over5,'escalations':sum(1 for c in calls if c.escalated_at),'takeovers':sum(1 for c in calls if c.taken_over_by_id),'sla_rate':sla_rate}
+    handovers=db.query(Handover).filter(Handover.created_at>=start,Handover.created_at<=end).order_by(Handover.created_at.desc()).all()
+    audits=db.query(AuditLog).filter(AuditLog.created_at>=start,AuditLog.created_at<=end).order_by(AuditLog.created_at.desc()).all()
+    filter_qs=f'period={period}'
+    from_date=request.query_params.get('from',''); to_date=request.query_params.get('to','')
+    if period=='custom' and from_date and to_date: filter_qs+=f'&from={from_date}&to={to_date}'
+    range_label=f'{start.strftime("%Y-%m-%d")} to {end.strftime("%Y-%m-%d")}'
+    return {'period':period,'start':start,'end':end,'calls':calls,'call_rows':call_rows,'nurse_perf':nurse_perf,'room_perf':room_perf,'kpi':kpi,'handovers':handovers,'audits':audits,'filter_qs':filter_qs,'from_date':from_date,'to_date':to_date,'range_label':range_label}
+
+@app.get('/manager',response_class=HTMLResponse)
+def manager_page(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['manager','ed_manager','admin']); enforce_escalations(db)
+    d=_management_data(request,db)
+    return render_template('manager.html',ctx(request,db,**d))
+
+@app.get('/manager/export.xlsx')
+def manager_export_excel(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['manager','ed_manager','admin']); d=_management_data(request,db)
+    wb=Workbook(); ws=wb.active; ws.title='Executive Dashboard'
+    navy='0B2A4A'; blue='0B67C2'; light='EAF2FB'; green='D1FADF'; amber='FEF0C7'; red='FEE4E2'; white='FFFFFF'
+    thin=Side(style='thin',color='D0D5DD')
+    ws['A1']='Burjeel ED Smart Call Bell - Executive KPI Dashboard'; ws['A1'].font=Font(size=16,bold=True,color=white); ws['A1'].fill=PatternFill('solid',fgColor=navy); ws.merge_cells('A1:F1')
+    ws['A2']='Reporting period'; ws['B2']=d['range_label']; ws['A3']='Generated UTC'; ws['B3']=now_utc().strftime('%Y-%m-%d %H:%M:%S')
+    metrics=[('Total Calls',d['kpi']['total']),('Average Response',d['kpi']['avg_response']),('Median Response',d['kpi']['median_response']),('Calls >2 min',d['kpi']['over_2m']),('Calls >5 min',d['kpi']['over_5m']),('Escalations',d['kpi']['escalations']),('Charge Takeovers',d['kpi']['takeovers']),('SLA Compliance',d['kpi']['sla_rate'])]
+    row=5
+    for label,value in metrics:
+        ws.cell(row=row,column=1,value=label).font=Font(bold=True); ws.cell(row=row,column=2,value=value); row+=1
+    ws['D5']='Calls by Room'; ws['D5'].font=Font(bold=True,color=white); ws['D5'].fill=PatternFill('solid',fgColor=blue); ws['E5']='Calls'; ws['E5'].font=Font(bold=True,color=white); ws['E5'].fill=PatternFill('solid',fgColor=blue)
+    for i,r in enumerate(d['room_perf'][:12],start=6): ws.cell(i,4,r['room']); ws.cell(i,5,r['calls'])
+    if d['room_perf']:
+        chart=BarChart(); chart.title='Call Volume by Room'; chart.y_axis.title='Calls'; chart.x_axis.title='Room'
+        chart.add_data(Reference(ws,min_col=5,min_row=5,max_row=5+min(12,len(d['room_perf']))),titles_from_data=True)
+        chart.set_categories(Reference(ws,min_col=4,min_row=6,max_row=5+min(12,len(d['room_perf'])))); chart.height=7; chart.width=12; ws.add_chart(chart,'G5')
+    for col in range(1,6): ws.column_dimensions[get_column_letter(col)].width=22
+
+    ws2=wb.create_sheet('Call Details')
+    headers=['Call ID','Room','Zone','Reason','Primary Nurse','Status','Created','Acknowledged','Arrived','Resolved','Response Time','Response Seconds','Total Duration','Duration Seconds','Escalated','Charge Takeover','SLA Status','Reassignment History']
+    ws2.append(headers)
+    for cell in ws2[1]: cell.font=Font(bold=True,color=white); cell.fill=PatternFill('solid',fgColor=navy); cell.alignment=Alignment(horizontal='center')
+    audit_by_call={}
+    for a in d['audits']:
+        if a.call_id: audit_by_call.setdefault(a.call_id,[]).append(f'{a.action}: {a.detail or ""}')
+    for c in d['call_rows']:
+        sla='Within SLA' if c['response_seconds'] is not None and c['response_seconds']<=SLA_SECONDS else ('Over SLA' if c['response_seconds'] is not None else 'Open/No arrival')
+        ws2.append([c['id'],c['room'],c['zone'],c['reason'],c['nurse'],c['status_label'],c['created'],c['acknowledged'],c['arrived'],c['resolved'],c['response'],c['response_seconds'],c['duration'],c['duration_seconds'],c['escalated'],c['takeover'],sla,' | '.join(audit_by_call.get(c['id'],[]))])
+    ws2.freeze_panes='A2'; ws2.auto_filter.ref=ws2.dimensions
+
+    ws3=wb.create_sheet('Nurse Performance'); ws3.append(['Nurse','Calls','Average Response','Average Seconds','Over SLA','Escalated'])
+    for n in d['nurse_perf']: ws3.append([n['name'],n['calls'],n['avg_response'],n['avg_seconds'],n['over_sla'],n['escalated']])
+    ws4=wb.create_sheet('Room Performance'); ws4.append(['Room','Zone','Calls','Average Response','Average Seconds','SLA Breaches'])
+    for r in d['room_perf']: ws4.append([r['room'],r['zone'],r['calls'],r['avg_response'],r['avg_seconds'],r['over_sla']])
+    ws5=wb.create_sheet('SLA & Escalation'); ws5.append(['Call ID','Room','Created','Response','Response Seconds','Escalated','Takeover','SLA Status'])
+    for c in d['call_rows']:
+        sla='Within SLA' if c['response_seconds'] is not None and c['response_seconds']<=SLA_SECONDS else ('Over SLA' if c['response_seconds'] is not None else 'Open/No arrival')
+        ws5.append([c['id'],c['room'],c['created'],c['response'],c['response_seconds'],c['escalated'],c['takeover'],sla])
+    ws6=wb.create_sheet('Handover'); ws6.append(['Room','From Nurse','To Nurse','Status','Created','Accepted'])
+    for h in d['handovers']: ws6.append([h.room.code,h.from_nurse.name,h.to_nurse.name,h.status,_aware(h.created_at).strftime('%Y-%m-%d %H:%M:%S') if h.created_at else '-',_aware(h.accepted_at).strftime('%Y-%m-%d %H:%M:%S') if h.accepted_at else '-'])
+    ws7=wb.create_sheet('Audit Summary'); ws7.append(['Time','Action','User','Room ID','Call ID','Detail'])
+    for a in d['audits']: ws7.append([_aware(a.created_at).strftime('%Y-%m-%d %H:%M:%S') if a.created_at else '-',a.action,a.user.name if a.user else '-',a.room_id,a.call_id,a.detail or ''])
+    for sheet in [ws3,ws4,ws5,ws6,ws7]:
+        for cell in sheet[1]: cell.font=Font(bold=True,color=white); cell.fill=PatternFill('solid',fgColor=navy)
+        sheet.freeze_panes='A2'; sheet.auto_filter.ref=sheet.dimensions
+    for sheet in wb.worksheets:
+        for row_cells in sheet.iter_rows():
+            for cell in row_cells:
+                cell.border=Border(bottom=thin); cell.alignment=Alignment(vertical='top')
+        for column in range(1,min(sheet.max_column,18)+1):
+            max_len=max([len(str(sheet.cell(r,column).value or '')) for r in range(1,min(sheet.max_row,200)+1)] or [10]); sheet.column_dimensions[get_column_letter(column)].width=min(max(max_len+2,11),36)
+    out=io.BytesIO(); wb.save(out); out.seek(0)
+    filename=f'Burjeel_ED_Call_Bell_KPI_{d["period"]}_{now_utc().strftime("%Y%m%d_%H%M")}.xlsx'
+    return Response(out.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
+
+@app.get('/manager/export.pdf')
+def manager_export_pdf(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['manager','ed_manager','admin']); d=_management_data(request,db)
+    out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=landscape(A4),rightMargin=24,leftMargin=24,topMargin=24,bottomMargin=24); styles=getSampleStyleSheet(); story=[]
+    story.append(Paragraph('Burjeel ED Smart Call Bell - KPI Management Report',styles['Title'])); story.append(Paragraph(d['range_label'],styles['Normal'])); story.append(Spacer(1,10))
+    k=d['kpi']; kdata=[['KPI','Value'],['Total Calls',k['total']],['Average Response',k['avg_response']],['Median Response',k['median_response']],['Calls >2 min',k['over_2m']],['Calls >5 min',k['over_5m']],['Escalations',k['escalations']],['Charge Takeovers',k['takeovers']],['SLA Compliance',k['sla_rate']]]
+    kt=Table(kdata,colWidths=[180,100]); kt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B2A4A')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,colors.HexColor('#F8FAFC')]),('PADDING',(0,0),(-1,-1),5)])); story.append(kt); story.append(Spacer(1,12))
+    story.append(Paragraph('Nurse Performance',styles['Heading2']))
+    ndata=[['Nurse','Calls','Avg Response','Over SLA','Escalated']]+[[n['name'],n['calls'],n['avg_response'],n['over_sla'],n['escalated']] for n in d['nurse_perf']]
+    nt=Table(ndata,repeatRows=1); nt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B67C2')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('PADDING',(0,0),(-1,-1),4)])); story.append(nt); story.append(Spacer(1,12))
+    story.append(Paragraph('Recent Call Lifecycle',styles['Heading2']))
+    cdata=[['Room','Created','Nurse','Status','Response','Escalated','Takeover','Reason']]+[[c['room'],c['created'],c['nurse'],c['status_label'],c['response'],c['escalated'],c['takeover'],c['reason']] for c in d['call_rows'][:60]]
+    ct=Table(cdata,repeatRows=1,colWidths=[50,100,80,70,55,55,75,110]); ct.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#0B2A4A')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),.25,colors.HexColor('#D0D5DD')),('FONTSIZE',(0,0),(-1,-1),7),('PADDING',(0,0),(-1,-1),3)])); story.append(ct)
+    doc.build(story); out.seek(0)
+    filename=f'Burjeel_ED_Call_Bell_KPI_{d["period"]}_{now_utc().strftime("%Y%m%d_%H%M")}.pdf'
+    return Response(out.getvalue(),media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
+
+def wallboard_payload(db:Session):
+    enforce_escalations(db)
+    active_status=['new','acknowledged','escalated','taken_over','arrived']
+    calls=db.query(Call).filter(Call.status.in_(active_status)).order_by(Call.created_at).all()
+    now=now_utc(); call_out=[]; call_by_room={}
+    for c in calls:
+        created=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
+        elapsed=max(0,int((now-created).total_seconds())) if created else 0
+        if c.status=='taken_over': alert_stage='takeover'
+        elif c.status=='arrived': alert_stage='arrived'
+        elif c.status=='acknowledged': alert_stage='acknowledged'
+        elif c.status=='escalated': alert_stage='critical'
+        elif elapsed<=SLA_SECONDS: alert_stage='fresh'
+        elif elapsed<=SLA_SECONDS*2: alert_stage='warning'
+        else: alert_stage='critical'
+        item={'id':c.id,'room':c.room.code,'room_id':c.room_id,'zone':c.room.zone,'status':c.status,'reason':c.reason,'nurse':c.assigned_nurse.name if c.assigned_nurse else 'Unassigned','takeover':c.taken_over_by.name if c.taken_over_by else None,'elapsed_seconds':elapsed,'elapsed_label':f'{elapsed//60:02d}:{elapsed%60:02d}','created_at':created.isoformat() if created else '','over_sla':c.status in ['new','acknowledged','escalated'] and elapsed>SLA_SECONDS,'alert_stage':alert_stage}
+        call_out.append(item); call_by_room[c.room_id]=item
+    rooms=db.query(Room).order_by(Room.zone,Room.code).all(); rooms_view=[]
+    for r in rooms:
+        c=call_by_room.get(r.id)
+        if c: rooms_view.append(dict(c))
+        else: rooms_view.append({'id':None,'room':r.code,'room_id':r.id,'zone':r.zone,'status':'ready' if r.occupied else 'closed','reason':'Ready' if r.occupied else 'Closed','nurse':r.assigned_nurse.name if r.assigned_nurse else 'Unassigned','takeover':None,'elapsed_seconds':0,'elapsed_label':'--:--','created_at':'','over_sla':False,'alert_stage':'idle'})
+    recent_calls=db.query(Call).filter(Call.resolved_at.isnot(None)).order_by(Call.resolved_at.desc()).limit(6).all()
+    recent=[]
+    for c in recent_calls:
+        s=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
+        e=c.arrived_at or c.resolved_at; e=e.replace(tzinfo=timezone.utc) if e and e.tzinfo is None else e
+        sec=max(0,int((e-s).total_seconds())) if s and e else 0
+        recent.append({'room':c.room.code,'response':f'{sec//60:02d}:{sec%60:02d}','nurse':(c.taken_over_by.name if c.taken_over_by else (c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'))})
+    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all(); workload=[]
+    for n in nurses:
+        workload.append({'name':n.name,'rooms':db.query(Room).filter_by(assigned_nurse_id=n.id,occupied=True).count(),'active':sum(1 for c in calls if c.assigned_nurse_id==n.id)})
+    hs=db.query(Handover).filter_by(status='pending').order_by(Handover.created_at.desc()).limit(8).all()
+    handovers=[{'room':h.room.code,'from_nurse':h.from_nurse.name,'to_nurse':h.to_nurse.name} for h in hs]
+    rt=[]
+    for c in recent_calls:
+        if c.created_at and (c.arrived_at or c.resolved_at):
+            s=c.created_at.replace(tzinfo=timezone.utc) if c.created_at.tzinfo is None else c.created_at; e=c.arrived_at or c.resolved_at; e=e.replace(tzinfo=timezone.utc) if e.tzinfo is None else e; rt.append((e-s).total_seconds())
+    avg=int(sum(rt)/len(rt)) if rt else 0
+    stats={'total_rooms':len(rooms),'active':len(calls),'escalated':sum(1 for c in calls if c.status=='escalated'),'over_sla':sum(1 for c in call_out if c['over_sla']),'avg_response':f'{avg//60:02d}:{avg%60:02d}','unassigned':db.query(Room).filter(Room.occupied==True,Room.assigned_nurse_id.is_(None)).count()}
+    return {'calls':call_out,'rooms_view':rooms_view,'recent':recent,'workload':workload,'handovers':handovers,'stats':stats,'zones':[z[0] for z in db.query(Room.zone).distinct().order_by(Room.zone).all()]}
+
+@app.get('/wallboard',response_class=HTMLResponse)
+def wallboard_page(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['nurse','charge','manager','ed_manager','admin'])
+    lang=request.query_params.get('lang','en').lower()
+    if lang not in ['en','ar']: lang='en'
+    p=wallboard_payload(db)
+    i18n={
+      'en':{'kicker':'Nurse Station Wallboard','title':'ED Live Call Board','subtitle':'Room calls, SLA escalation, nurse workload and handover status.','enable_sound':'Enable sound','sound_on':'Sound on','tap_sound':'Tap for sound','fullscreen':'Full screen','total_rooms':'Rooms','active_calls':'Active calls','escalated':'Escalated','over_sla':'Over SLA','avg_response':'Avg response','unassigned':'Unassigned rooms','all':'All','connected':'Connected','disconnected':'Offline','no_calls':'No active call bell requests','assigned_nurse':'Assigned nurse','elapsed':'Elapsed','charge_takeover':'Charge takeover','nurse_workload':'Nurse workload','pending_handover':'Pending handover','recent_resolved':'Recent resolved','rooms':'rooms','calls':'calls','none':'None','compact':'Compact','cards':'Cards','list':'List','zones':'Zones','show_idle':'Show ready rooms','legend_green':'0–2 min','legend_amber':'2–4 min','legend_red':'4+ min / escalated','legend_blue':'Charge takeover','status':{'new':'NEW CALL','acknowledged':'ACKNOWLEDGED','escalated':'ESCALATED','taken_over':'CHARGE TAKEOVER','arrived':'ARRIVED','ready':'READY','closed':'CLOSED'},'reason':{'General assistance':'General assistance','Pain':'Pain','Toilet assistance':'Toilet assistance','IV / Medication':'IV / Medication','Ready':'Ready','Closed':'Closed'}},
+      'ar':{'kicker':'شاشة محطة التمريض','title':'لوحة نداءات الطوارئ المباشرة','subtitle':'نداءات الغرف والتصعيد وعبء التمريض وحالات التسليم.','enable_sound':'تفعيل الصوت','sound_on':'الصوت مفعل','tap_sound':'اضغط لتفعيل الصوت','fullscreen':'ملء الشاشة','total_rooms':'الغرف','active_calls':'النداءات النشطة','escalated':'تم التصعيد','over_sla':'تجاوز الوقت','avg_response':'متوسط الاستجابة','unassigned':'غرف بدون ممرضة','all':'الكل','connected':'متصل','disconnected':'غير متصل','no_calls':'لا توجد نداءات نشطة','assigned_nurse':'الممرضة المسؤولة','elapsed':'الوقت','charge_takeover':'استلام مسؤول التمريض','nurse_workload':'عبء التمريض','pending_handover':'تسليمات معلقة','recent_resolved':'آخر النداءات المغلقة','rooms':'غرف','calls':'نداءات','none':'لا يوجد','compact':'مضغوط','cards':'بطاقات','list':'قائمة','zones':'مناطق','show_idle':'إظهار الغرف الجاهزة','legend_green':'0–2 دقيقة','legend_amber':'2–4 دقائق','legend_red':'4+ دقائق / تصعيد','legend_blue':'استلام مسؤول التمريض','status':{'new':'نداء جديد','acknowledged':'تم التأكيد','escalated':'تم التصعيد','taken_over':'استلام المسؤول','arrived':'تم الوصول','ready':'جاهزة','closed':'مغلقة'},'reason':{'General assistance':'مساعدة عامة','Pain':'ألم','Toilet assistance':'مساعدة للحمام','IV / Medication':'المحلول / الدواء','Ready':'جاهزة','Closed':'مغلقة'}}
+    }
+    t=i18n[lang]; calls=[]; rooms_view=[]
+    for c in p['calls']:
+        x=dict(c); x['status_label']=t['status'].get(c['status'],c['status']); x['reason_label']=t['reason'].get(c['reason'],c['reason']); calls.append(x)
+    for r in p['rooms_view']:
+        x=dict(r); x['status_label']=t['status'].get(r['status'],r['status']); x['reason_label']=t['reason'].get(r['reason'],r['reason']); rooms_view.append(x)
+    return render_template('wallboard.html',ctx(request,db,lang=lang,t=t,calls=calls,rooms_view=rooms_view,recent=p['recent'],workload=p['workload'],handovers=p['handovers'],stats=p['stats'],zones=p['zones'],wall_i18n_json=json.dumps(t,ensure_ascii=False),call_ids_json=json.dumps([c['id'] for c in p['calls']]),call_stages_json=json.dumps({str(c['id']):c['alert_stage'] for c in p['calls']})))
+
+@app.get('/api/wallboard')
+def wallboard_api(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['nurse','charge','manager','ed_manager','admin']); return wallboard_payload(db)
+
+@app.get('/admin',response_class=HTMLResponse)
+def admin_page(request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['admin'])
+    users=db.query(User).order_by(User.role,User.name).all()
+    rooms=db.query(Room).order_by(Room.code).all()
+    nurses=db.query(User).filter_by(role='nurse',active=True).order_by(User.name).all()
+    audit_logs=db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()
+    active_calls=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).count()
+    push_count=db.query(PushSubscription).count()
+    return render_template('admin.html',ctx(request,db,rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
+
+@app.post('/admin/users')
+async def admin_create_user(request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); form=await request.form()
+    name=str(form.get('name','')).strip(); email=str(form.get('email','')).strip().lower(); role=str(form.get('role','')).strip(); password=str(form.get('password',''))
+    if role not in ['nurse','charge','manager','ed_manager','admin'] or not name or not email or len(password)<8: raise HTTPException(400)
+    if db.query(User).filter_by(email=email).first(): return RedirectResponse('/admin#staff',303)
+    u=User(name=name,email=email,role=role,password_hash=pwd_hash(password),active=True); db.add(u); db.flush(); log_action(db,'ADMIN_USER_CREATED',f'{email} role={role}',user=admin); db.commit()
+    return RedirectResponse('/admin#staff',303)
+
+@app.post('/admin/users/{uid}/toggle')
+def admin_toggle_user(uid:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); u=db.get(User,uid)
+    if not u: raise HTTPException(404)
+    if u.id==admin.id: return RedirectResponse('/admin#staff',303)
+    u.active=not u.active; log_action(db,'ADMIN_USER_TOGGLED',f'{u.email} active={u.active}',user=admin); db.commit()
+    return RedirectResponse('/admin#staff',303)
+
+@app.post('/admin/users/{uid}/reset')
+async def admin_reset_password(uid:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); u=db.get(User,uid)
+    if not u: raise HTTPException(404)
+    form=await request.form(); password=str(form.get('password',''))
+    if len(password)<8: raise HTTPException(400)
+    u.password_hash=pwd_hash(password); log_action(db,'ADMIN_PASSWORD_RESET',u.email,user=admin); db.commit()
+    return RedirectResponse('/admin#staff',303)
+
+@app.post('/admin/rooms')
+async def admin_create_room(request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); form=await request.form()
+    code=str(form.get('code','')).strip().upper(); zone=str(form.get('zone','')).strip() or 'ED Main'; nurse_id=str(form.get('nurse_id','')).strip()
+    if not code or db.query(Room).filter_by(code=code).first(): return RedirectResponse('/admin#rooms',303)
+    nurse=db.get(User,int(nurse_id)) if nurse_id else None
+    if nurse and nurse.role!='nurse': nurse=None
+    room=Room(code=code,zone=zone,qr_token=secrets.token_urlsafe(18),occupied=True,assigned_nurse_id=nurse.id if nurse else None); db.add(room); db.flush(); log_action(db,'ADMIN_ROOM_CREATED',f'{code} zone={zone}',room=room,user=admin); db.commit()
+    return RedirectResponse('/admin#rooms',303)
+
+@app.post('/admin/rooms/{room_id}/edit')
+async def admin_edit_room(room_id:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    form=await request.form()
+    code=str(form.get('code','')).strip().upper()
+    zone=str(form.get('zone','')).strip()
+    if not code or not zone:
+        return RedirectResponse('/admin?room_msg=Room+name+and+zone+are+required&room_msg_type=error#rooms',303)
+    duplicate=db.query(Room).filter(Room.code==code,Room.id!=room.id).first()
+    if duplicate:
+        return RedirectResponse('/admin?room_msg=Room+name+already+exists&room_msg_type=error#rooms',303)
+    old_code,old_zone=room.code,room.zone
+    room.code=code; room.zone=zone
+    log_action(db,'ADMIN_ROOM_EDITED',f'{old_code}/{old_zone} -> {code}/{zone}',room=room,user=admin)
+    db.commit()
+    return RedirectResponse('/admin?room_msg=Room+updated+successfully#rooms',303)
+
+@app.post('/admin/rooms/{room_id}/delete')
+def admin_delete_room(room_id:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    active=db.query(Call).filter_by(room_id=room.id).filter(Call.status.in_(['new','acknowledged','escalated','taken_over','arrived'])).first()
+    if active:
+        return RedirectResponse('/admin?room_msg=Cannot+delete+a+room+with+an+active+call&room_msg_type=error#rooms',303)
+    if db.query(Call).filter_by(room_id=room.id).first() or db.query(Handover).filter_by(room_id=room.id).first():
+        return RedirectResponse('/admin?room_msg=Room+has+call+or+handover+history.+Close+it+instead+to+preserve+audit+records&room_msg_type=error#rooms',303)
+    code,zone=room.code,room.zone
+    db.query(AuditLog).filter_by(room_id=room.id).update({AuditLog.room_id:None},synchronize_session=False)
+    db.delete(room)
+    db.add(AuditLog(action='ADMIN_ROOM_DELETED',detail=f'{code} zone={zone}',user_id=admin.id))
+    db.commit()
+    return RedirectResponse('/admin?room_msg=Room+deleted+successfully#rooms',303)
+
+@app.get('/admin/rooms/{room_id}/qr',response_class=HTMLResponse)
+def admin_room_qr(room_id:int,request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    patient_url=str(request.base_url).rstrip('/')+f'/room/{room.qr_token}'
+    image=qrcode.make(patient_url,image_factory=qrcode.image.svg.SvgPathImage)
+    buf=io.BytesIO(); image.save(buf); qr_data=base64.b64encode(buf.getvalue()).decode('ascii')
+    auto_print=request.query_params.get('print')=='1'
+    return render_template('qr.html',ctx(request,db,room=room,qr_data=qr_data,patient_url=patient_url,auto_print=auto_print))
+
+@app.post('/admin/rooms/{room_id}/toggle')
+def admin_toggle_room(room_id:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    room.occupied=not room.occupied; log_action(db,'ADMIN_ROOM_TOGGLED',f'{room.code} occupied={room.occupied}',room=room,user=admin); db.commit()
+    return RedirectResponse('/admin#rooms',303)
+
+@app.post('/admin/rooms/{room_id}/assign')
+async def admin_assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    form=await request.form(); nurse_id=str(form.get('nurse_id','')).strip(); nurse=db.get(User,int(nurse_id)) if nurse_id else None
+    if nurse and nurse.role!='nurse': raise HTTPException(400)
+    old=room.assigned_nurse.name if room.assigned_nurse else 'Unassigned'; room.assigned_nurse_id=nurse.id if nurse else None
+    log_action(db,'ADMIN_ROOM_ASSIGNED',f'{room.code}: {old} -> {nurse.name if nurse else "Unassigned"}',room=room,user=admin); db.commit()
+    if nurse: send_push_to_user(db,nurse.id,f'Room assigned - {room.code}',f'{room.code} ({room.zone}) is now under your responsibility.','/nurse')
+    return RedirectResponse('/admin#rooms',303)
+
+@app.post('/admin/rooms/{room_id}/token')
+def admin_regenerate_room_token(room_id:int,request:Request,db:Session=Depends(get_db)):
+    admin=require_role(request,db,['admin']); room=db.get(Room,room_id)
+    if not room: raise HTTPException(404)
+    room.qr_token=secrets.token_urlsafe(18); log_action(db,'ADMIN_ROOM_TOKEN_REGENERATED',room.code,room=room,user=admin); db.commit()
+    return RedirectResponse('/admin#rooms',303)
+@app.post('/api/call/{call_id}/{action}')
+def call_action(call_id:int,action:str,request:Request,db:Session=Depends(get_db)):
+    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); c=db.get(Call,call_id)
+    if not c: raise HTTPException(404)
+    if action=='ack':
+        if u.role=='nurse' and c.assigned_nurse_id!=u.id: raise HTTPException(403)
+        c.status='acknowledged'; c.acknowledged_at=c.acknowledged_at or now_utc(); log_action(db,'CALL_ACKNOWLEDGED',f'By {u.name}',call=c,user=u)
+    elif action=='takeover':
+        if u.role not in ['charge','manager','ed_manager','admin']: raise HTTPException(403)
+        c.status='taken_over'; c.taken_over_by_id=u.id
+        if not c.acknowledged_at: c.acknowledged_at=now_utc()
+        if not c.escalated_at:c.escalated_at=now_utc();c.escalation_reason='Charge nurse manual takeover'
+        log_action(db,'CALL_TAKEN_OVER',f'By {u.name}; primary={c.assigned_nurse.name if c.assigned_nurse else "Unassigned"}',call=c,user=u)
+    elif action=='arrive':
+        if not(u.id in [c.assigned_nurse_id,c.taken_over_by_id] or u.role in ['charge','manager','ed_manager','admin']): raise HTTPException(403)
+        c.status='arrived'; c.arrived_at=now_utc()
+        if not c.acknowledged_at: c.acknowledged_at=c.arrived_at
+        log_action(db,'NURSE_ARRIVED',f'By {u.name}',call=c,user=u)
+    elif action=='resolve':
+        if not(u.id in [c.assigned_nurse_id,c.taken_over_by_id] or u.role in ['charge','manager','ed_manager','admin']): raise HTTPException(403)
+        c.status='resolved'; c.resolved_at=now_utc(); log_action(db,'CALL_RESOLVED',f'By {u.name}',call=c,user=u)
+    else: raise HTTPException(400)
+    db.commit(); return {'ok':True,'call':serialize_call(c)}
+@app.post('/api/call/{call_id}/reassign')
+async def reassign_active_call(call_id:int,request:Request,db:Session=Depends(get_db)):
+    supervisor=require_role(request,db,['charge','manager','ed_manager','admin'])
+    c=db.get(Call,call_id)
+    if not c: raise HTTPException(404)
+    if c.status not in ['new','acknowledged','escalated','taken_over']:
+        return JSONResponse({'ok':False,'error':'Only an open call that has not reached Arrived can be reassigned.'},409)
+    data=await request.json()
+    try: nurse_id=int(data.get('nurse_id'))
+    except: return JSONResponse({'ok':False,'error':'Select a nurse.'},400)
+    reason=str(data.get('reason','')).strip()
+    if reason not in ['Workload balancing','Break','Shift change','No response','Clinical priority','Other']:
+        return JSONResponse({'ok':False,'error':'Select a valid reassignment reason.'},400)
+    nurse=db.get(User,nurse_id)
+    if not nurse or nurse.role!='nurse' or not nurse.active:
+        return JSONResponse({'ok':False,'error':'Selected nurse is not active.'},400)
+    if c.assigned_nurse_id==nurse.id:
+        return JSONResponse({'ok':False,'error':'This nurse is already assigned.'},409)
+    old_nurse=c.assigned_nurse
+    old_name=old_nurse.name if old_nurse else 'Unassigned'
+    old_id=c.assigned_nurse_id
+    c.assigned_nurse_id=nurse.id
+    c.room.assigned_nurse_id=nurse.id
+    if c.status in ['new','acknowledged']:
+        c.status='new'; c.acknowledged_at=None
+    elif c.status in ['escalated','taken_over']:
+        c.status='escalated'; c.taken_over_by_id=None
+    detail=f'{c.room.code}: {old_name} -> {nurse.name}; reason={reason}; by={supervisor.name}; original_call_time={c.created_at.isoformat()}'
+    log_action(db,'CALL_REASSIGNED',detail,room=c.room,call=c,user=supervisor)
+    db.commit()
+    send_push_to_user(db,nurse.id,f'Reassigned Call - {c.room.code}',f'{reason}. Patient call requires your response.','/nurse')
+    if old_id:
+        send_push_to_user(db,old_id,f'Call Reassigned - {c.room.code}',f'Call moved to {nurse.name} by {supervisor.name}.','/nurse')
+    return {'ok':True,'call':serialize_call(c),'from_nurse':old_name,'to_nurse':nurse.name,'reason':reason,'timer_preserved':True}
+
+@app.post('/api/room/{room_id}/assign')
+async def assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):
+    require_role(request,db,['charge','manager','ed_manager','admin']); data=await request.json(); room=db.get(Room,room_id); nurse=db.get(User,int(data['nurse_id']))
+    if not room or not nurse: raise HTTPException(404)
+    if nurse.role!='nurse': return JSONResponse({'ok':False,'error':'Only nurse users can be assigned'},400)
+    old=room.assigned_nurse; room.assigned_nurse_id=nurse.id; log_action(db,'ROOM_ASSIGNED',f'{room.code}: {old.name if old else "Unassigned"} -> {nurse.name}',room=room); db.commit()
+    send_push_to_user(db,nurse.id,f'Room assigned - {room.code}',f'{room.code} ({room.zone}) is now under your responsibility.','/nurse')
+    if old and old.id!=nurse.id: send_push_to_user(db,old.id,f'Room reassigned - {room.code}',f'{room.code} was reassigned to {nurse.name}.','/nurse')
+    return {'ok':True}
+
+@app.post('/api/handover')
+async def create_handover(request:Request,db:Session=Depends(get_db)):
+    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); data=await request.json(); room=db.get(Room,int(data['room_id'])); to_nurse=db.get(User,int(data['to_nurse_id']))
+    if not room or not to_nurse: raise HTTPException(404)
+    if to_nurse.role!='nurse': return JSONResponse({'ok':False,'error':'Target must be a nurse'},400)
+    if u.role=='nurse' and room.assigned_nurse_id!=u.id: raise HTTPException(403)
+    existing=db.query(Handover).filter_by(room_id=room.id,status='pending').first()
+    if existing: return {'ok':True,'handover_id':existing.id,'duplicate':True}
+    h=Handover(room_id=room.id,from_nurse_id=room.assigned_nurse_id or u.id,to_nurse_id=to_nurse.id,status='pending'); db.add(h); db.flush(); log_action(db,'HANDOVER_CREATED',f'{room.code} -> {to_nurse.name}',room=room,user=u); db.commit(); send_push_to_user(db,to_nurse.id,f'Handover request - {room.code}',f'{u.name} wants to hand over {room.code} ({room.zone}) to you. Open My Rooms to accept.','/nurse'); return {'ok':True,'handover_id':h.id}
+
+@app.post('/api/handover/{hid}/accept')
+def accept_handover(hid:int,request:Request,db:Session=Depends(get_db)):
+    u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); h=db.get(Handover,hid)
+    if not h: raise HTTPException(404)
+    if u.role=='nurse' and h.to_nurse_id!=u.id: raise HTTPException(403)
+    h.status='accepted'; h.accepted_at=now_utc(); h.room.assigned_nurse_id=h.to_nurse_id; log_action(db,'HANDOVER_ACCEPTED',f'{h.room.code}: {h.from_nurse.name} -> {h.to_nurse.name}',room=h.room,user=u); db.commit()
+    send_push_to_user(db,h.from_nurse_id,f'Handover accepted - {h.room.code}',f'{h.to_nurse.name} accepted responsibility for {h.room.code}.','/nurse')
+    return {'ok':True}
+
 @app.post('/api/push/subscribe')
 async def push_subscribe(request:Request,db:Session=Depends(get_db)):
     u=require_role(request,db,['nurse','charge','manager','ed_manager','admin']); payload=await request.json(); endpoint=payload.get('endpoint')
