@@ -47,7 +47,7 @@ class MainActivity: Activity() {
                 return false
             }
             override fun onReceivedHttpError(view: WebView,request: WebResourceRequest,response: WebResourceResponse) {
-                if(request.isForMainFrame && response.statusCode==401 && NativePolicy.isAllowedUrl(request.url.toString())) {
+                if(NativePolicy.redirectExpiredSession(request.url.toString(),request.isForMainFrame,response.statusCode)) {
                     testSent=false
                     view.loadUrl(NativePolicy.ORIGIN+"/login")
                 }

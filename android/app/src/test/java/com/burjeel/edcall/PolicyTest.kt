@@ -3,6 +3,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PolicyTest {
+    @Test fun invalidLoginKeepsServerErrorVisible() {
+        assertFalse(NativePolicy.redirectExpiredSession(NativePolicy.ORIGIN+"/login",true,401))
+        assertTrue(NativePolicy.redirectExpiredSession(NativePolicy.ORIGIN+"/nurse",true,401))
+        assertFalse(NativePolicy.redirectExpiredSession(NativePolicy.ORIGIN+"/api/mobile/status",false,401))
+    }
+
     @Test fun ordinaryLaunchUsesSessionRouter() {
         assertEquals("/", NativePolicy.safePath("/"))
     }

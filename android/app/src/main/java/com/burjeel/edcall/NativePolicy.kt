@@ -9,6 +9,7 @@ object NativePolicy {
         url.scheme=="https" && url.host==base.host && (url.port==-1 || url.port==443) && url.userInfo==null
     } catch (_: Exception) { false }
     fun safePath(value: String): String = if (value in setOf("/","/nurse","/charge","/manager","/alerts")) value else "/nurse"
+    fun redirectExpiredSession(url: String, mainFrame: Boolean, status: Int): Boolean = mainFrame && status==401 && isAllowedUrl(url) && URI(url).path!="/login"
     fun notificationTag(eventId: String): String = "burjeel-$eventId"
     fun ready(registered: Boolean, permission: Boolean, channel: Boolean): Boolean = registered && permission && channel
     fun revocationState(confirmed: Boolean): String = if (confirmed) "confirmed" else "pending"
