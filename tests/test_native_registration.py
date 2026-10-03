@@ -132,3 +132,11 @@ class NativeRegistrationTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':'wrong'}).status_code,409)
             self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':receipt}).status_code,200)
             self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':receipt}).status_code,409)
+
+    def test_native_login_progress_bootstraps_on_root_and_login(self):
+        with patch.object(app,'current_user',return_value=None):
+            for path in ('/','/login'):
+                response=self.client.get(path)
+                self.assertEqual(response.status_code,200)
+                self.assertIn('if(window.BurjeelNative)',response.text)
+                self.assertIn('/static/native-login.js',response.text)

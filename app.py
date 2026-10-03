@@ -113,6 +113,7 @@ template_env = Environment(loader=DictLoader(TEMPLATES), autoescape=select_autoe
 
 def render_template(name, context, status_code=200):
     html=template_env.get_template(name).render(**context)
+    if name=='login.html': html=html.replace('</body>',"<script>if(window.BurjeelNative){const s=document.createElement('script');s.src='/static/native-login.js';document.body.appendChild(s);}</script></body>",1)
     if context.get('native_client'): html=html.replace('<head>','<head><script>window.NATIVE_PUSH_SESSION=true;</script>',1)
     return HTMLResponse(html, status_code=status_code)
 
