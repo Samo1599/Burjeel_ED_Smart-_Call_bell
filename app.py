@@ -598,11 +598,27 @@ async def mobile_ready_received(request:Request,db:Session=Depends(get_db)):
     if row.user_id!=u.id or request.session.get('native_installation')!=row.installation_id: raise HTTPException(403)
     body=await _mobile_body(request)
     receipt=str(body.get('receipt_token',''))
-    expected=request.session.get('native_test',{}).get('receipt_digest','')
-    if not receipt or not expected or not secrets.compare_digest(native_registration.digest(receipt),expected): raise HTTPException(409,'Waiting for device receipt')
-    result=mobile_ready(request,db)
+    record=db.get(native_registration.Receipt,native_registration.digest(receipt)) if receipt else None
+    valid=bool(record and record.installation_id==row.installation_id and record.user_id==u.id and record.credential_hash==row.credential_hash and not record.consumed)
+    if valid:
+        created=record.created_at
+        if created.tzinfo is None: created=created.replace(tzinfo=timezone.utc)
+        valid=(now_utc()-created).total_seconds()<=300
+    if not valid:
+        _record_runtime_event('native-notifications','/api/mobile/ready-received','NativeReceiptRejected','Device test receipt missing, expired or no longer matches enrollment.',user_ref=_diag_user_ref(request))
+        raise HTTPException(409,'Device test receipt expired or invalid. Retry verification.')
+    if not native_fcm.enabled(): raise HTTPException(503,'Native FCM disabled')
+    from sqlalchemy import update as receipt_update
+    claimed=db.execute(receipt_update(native_registration.Receipt).where(native_registration.Receipt.digest==record.digest,native_registration.Receipt.consumed.is_(False)).values(consumed=True).execution_options(synchronize_session=False)).rowcount
+    if claimed!=1: db.rollback(); raise HTTPException(409,'Receipt already used')
+    verified=db.get(native_registration.Verification,row.installation_id)
+    if not verified:
+        verified=native_registration.Verification(installation_id=row.installation_id)
+        db.add(verified)
+    verified.user_id=u.id; verified.confirmed_at=now_utc(); db.commit()
+    request.session['notification_verified']=True
     request.session.pop('native_test',None)
-    return result
+    return {'url':role_home(u.role)}
 
 @app.post('/api/mobile/resume')
 def mobile_resume(request:Request,db:Session=Depends(get_db)):
@@ -644,7 +660,14 @@ async def mobile_test(request:Request,db:Session=Depends(get_db)):
     row=db.query(NativePushDevice).filter_by(user_id=u.id,installation_id=installation,active=True).first()
     if not row: raise HTTPException(404)
     event={'event_id':secrets.token_hex(16),'sent_at_ms':int(now_utc().timestamp()*1000),'title':'Burjeel ED test','kind':'test','url':role_home(u.role),'receipt_token':secrets.token_urlsafe(32)}
+    db.query(native_registration.Receipt).filter_by(installation_id=installation).delete()
+    receipt=native_registration.Receipt(digest=native_registration.digest(event['receipt_token']),installation_id=installation,user_id=u.id,credential_hash=row.credential_hash,created_at=now_utc(),consumed=False)
+    db.add(receipt); db.commit()
     result=native_fcm.send_native_to_user(db,u.id,event,installation)
+    if result.get('sent')!=1:
+        db.delete(receipt); db.commit()
+        _record_runtime_event('native-notifications','/api/mobile/test','NativeTestSendFailed','Provider did not accept the device test alert.',user_ref=_diag_user_ref(request))
+        return JSONResponse({'event_id':event['event_id'],'provider':result},status_code=503)
     if result.get('sent')==1: request.session['native_test']={'installation':installation,'at':int(now_utc().timestamp()),'receipt_digest':native_registration.digest(event['receipt_token'])}
     return {'event_id':event['event_id'],'provider':result}
 

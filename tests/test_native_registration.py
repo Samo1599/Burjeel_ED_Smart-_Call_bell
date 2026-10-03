@@ -140,3 +140,35 @@ class NativeRegistrationTests(unittest.TestCase):
                 self.assertEqual(response.status_code,200)
                 self.assertIn('if(window.BurjeelNative)',response.text)
                 self.assertIn('/static/native-login.js',response.text)
+
+    def test_device_receipt_survives_session_cookie_overwrite(self):
+        first=self.enroll(self.challenge()).json()
+        headers={'Authorization':'Bearer '+first['credential']}
+        status=self.client.get('/api/mobile/status').json()
+        with patch.object(app.native_fcm,'enabled',return_value=True),patch.object(app.native_fcm,'send_native_to_user',return_value={'sent':1}) as sender:
+            self.client.post('/api/mobile/test',headers={**self.origin,'X-CSRF-Token':status['csrf_token']},json={'installation_id':first['installation_id']})
+            receipt=sender.call_args.args[2]['receipt_token']
+            def cookie_overwritten(request,db):
+                request.session.pop('native_test',None)
+                return self.user
+            with patch.object(app,'_mobile_user',side_effect=cookie_overwritten):
+                self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':receipt}).status_code,200)
+
+    def test_invalid_device_receipt_is_visible_in_error_monitor(self):
+        first=self.enroll(self.challenge()).json()
+        headers={'Authorization':'Bearer '+first['credential']}
+        before=app.SessionLocal()
+        try:before.query(app.RuntimeErrorEvent).delete();before.commit()
+        finally:before.close()
+        self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':'wrong'})
+        with app.SessionLocal() as db:
+            self.assertIsNotNone(db.query(app.RuntimeErrorEvent).filter_by(source='native-notifications').first())
+
+    def test_provider_rejection_leaves_open_monitor_event(self):
+        first=self.enroll(self.challenge()).json()
+        status=self.client.get('/api/mobile/status').json()
+        with patch.object(app.native_fcm,'send_native_to_user',return_value={'sent':0,'failed':1}):
+            response=self.client.post('/api/mobile/test',headers={**self.origin,'X-CSRF-Token':status['csrf_token']},json={'installation_id':first['installation_id']})
+        self.assertEqual(response.status_code,503)
+        with app.SessionLocal() as db:
+            self.assertIsNotNone(db.query(app.RuntimeErrorEvent).filter_by(source='native-notifications',exception_type='NativeTestSendFailed',status='open').first())

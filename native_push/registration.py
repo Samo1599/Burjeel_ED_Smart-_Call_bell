@@ -6,10 +6,10 @@ from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, update
 
-Device = Challenge = Verification = User = None
+Device = Challenge = Verification = Receipt = User = None
 
 def configure(base, user_model):
-    global Device, Challenge, Verification, User
+    global Device, Challenge, Verification, Receipt, User
     User = user_model
     class NativePushDevice(base):
         __tablename__ = 'native_push_devices'
@@ -31,6 +31,15 @@ def configure(base, user_model):
         installation_id = Column(String(36), primary_key=True)
         user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
         confirmed_at = Column(DateTime(timezone=True), nullable=False)
+    class NativeTestReceipt(base):
+        __tablename__ = 'native_test_receipts'
+        digest = Column(String(64), primary_key=True)
+        installation_id = Column(String(36), nullable=False, index=True)
+        user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+        credential_hash = Column(String(64), nullable=False)
+        created_at = Column(DateTime(timezone=True), nullable=False)
+        consumed = Column(Boolean, default=False, nullable=False)
+    Receipt = NativeTestReceipt
     Verification = NativeDeviceVerification
     Device, Challenge = NativePushDevice, NativeEnrollmentChallenge
     return Device, Challenge
@@ -73,6 +82,7 @@ def exchange_challenge(db, challenge: str, installation_id: str, fcm_token: str,
     if other and other != row:
         db.rollback()
         raise HTTPException(409, 'Token belongs to another installation')
+    db.query(Receipt).filter_by(installation_id=installation_id).delete()
     credential = secrets.token_urlsafe(32)
     if not row:
         row = Device(installation_id=installation_id)

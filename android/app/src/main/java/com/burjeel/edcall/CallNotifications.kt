@@ -36,6 +36,7 @@ object CallNotifications {
         val manager=context.getSystemService(NotificationManager::class.java)
         val tag=NativePolicy.notificationTag(event.eventId)
         manager.notify(tag,1,notification)
-        return manager.activeNotifications.any { it.tag==tag && it.id==1 }
+        // notify() queues display asynchronously; visibility is checked by the login poll.
+        return true
     }
 }

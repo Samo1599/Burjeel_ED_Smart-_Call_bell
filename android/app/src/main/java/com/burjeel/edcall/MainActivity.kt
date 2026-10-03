@@ -165,7 +165,7 @@ class MainActivity: Activity() {
     private fun awaitReceipt() {
         if(!testSent || testEvent.isEmpty() || !store.registered) return
         val receipt=try { org.json.JSONObject(store.testReceipt) } catch(_: Exception) { org.json.JSONObject() }
-        if(CallNotifications.allowed(this) && TestReceipt.matches(testEvent,receipt.optString("event"),java.security.MessageDigest.getInstance("SHA-256").digest(store.credential.toByteArray()).joinToString("") { "%02x".format(it) },receipt.optString("registration"),receipt.optLong("at"),System.currentTimeMillis())) {
+        if(CallNotifications.allowed(this) && getSystemService(NotificationManager::class.java).activeNotifications.any { it.tag==NativePolicy.notificationTag(testEvent) && it.id==1 } && TestReceipt.matches(testEvent,receipt.optString("event"),java.security.MessageDigest.getInstance("SHA-256").digest(store.credential.toByteArray()).joinToString("") { "%02x".format(it) },receipt.optString("registration"),receipt.optLong("at"),System.currentTimeMillis())) {
             receivedToken=receipt.optString("token")
             if(receivedToken.isNotEmpty()) { progressStage=3; confirm(); return }
         }
