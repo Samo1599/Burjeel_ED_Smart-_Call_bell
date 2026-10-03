@@ -34,6 +34,22 @@ class NativeRegistrationTests(unittest.TestCase):
     def enroll(self,challenge,installation=None,credential=None):
         return self.client.post('/api/mobile/enroll',headers={'Authorization':'Bearer '+credential} if credential else {},json={'challenge':challenge,'installation_id':installation or str(uuid.uuid4()),'fcm_token':'test-token-'+str(uuid.uuid4()),'user_id':123})
 
+    def test_verified_installation_resumes_without_another_test(self):
+        first=self.enroll(self.challenge()).json()
+        headers={'Authorization':'Bearer '+first['credential']}
+        with patch.object(app.native_fcm,'enabled',return_value=True),patch.object(app.native_fcm,'send_native_to_user',return_value={'sent':1}) as sender:
+            self.assertEqual(self.client.post('/api/mobile/resume',headers=headers).status_code,409)
+            status=self.client.get('/api/mobile/status').json()
+            self.client.post('/api/mobile/test',headers={**self.origin,'X-CSRF-Token':status['csrf_token']},json={'installation_id':first['installation_id']})
+            self.assertEqual(self.client.post('/api/mobile/ready',headers=headers).status_code,200)
+            second=self.enroll(self.challenge(),first['installation_id'],first['credential']).json()
+            headers={'Authorization':'Bearer '+second['credential']}
+            self.assertEqual(self.client.post('/api/mobile/resume',headers=headers).status_code,200)
+            self.assertEqual(sender.call_count,1)
+            self.user.id=9002
+            third=self.enroll(self.challenge(),first['installation_id'],second['credential']).json()
+            self.assertEqual(self.client.post('/api/mobile/resume',headers={'Authorization':'Bearer '+third['credential']}).status_code,409)
+
     def test_challenge_ownership_and_replay(self):
         with patch.object(app,'current_user',return_value=None):
             self.assertEqual(self.client.post('/api/mobile/challenge',headers=self.origin).status_code,401)

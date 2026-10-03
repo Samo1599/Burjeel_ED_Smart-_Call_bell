@@ -575,6 +575,22 @@ def mobile_ready(request:Request,db:Session=Depends(get_db)):
     if not native_fcm.enabled(): raise HTTPException(503,'Native FCM disabled')
     test=request.session.get('native_test',{})
     if test.get('installation')!=row.installation_id or int(now_utc().timestamp())-test.get('at',0)>300: raise HTTPException(409,'Send and observe a device test first')
+    verified=db.get(native_registration.Verification,row.installation_id)
+    if not verified:
+        verified=native_registration.Verification(installation_id=row.installation_id)
+        db.add(verified)
+    verified.user_id=u.id; verified.confirmed_at=now_utc(); db.commit()
+    request.session['notification_verified']=True
+    return {'url':role_home(u.role)}
+
+@app.post('/api/mobile/resume')
+def mobile_resume(request:Request,db:Session=Depends(get_db)):
+    row=native_registration.authenticated_device(db,_mobile_credential(request))
+    u=_mobile_user(request,db)
+    if row.user_id!=u.id or request.session.get('native_installation')!=row.installation_id: raise HTTPException(403)
+    if not native_fcm.enabled(): raise HTTPException(503,'Native FCM disabled')
+    verified=db.get(native_registration.Verification,row.installation_id)
+    if not verified or verified.user_id!=u.id: raise HTTPException(409,'Observe a device test first')
     request.session['notification_verified']=True
     return {'url':role_home(u.role)}
 

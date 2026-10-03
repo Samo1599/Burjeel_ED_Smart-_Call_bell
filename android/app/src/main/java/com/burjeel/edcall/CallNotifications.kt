@@ -22,7 +22,7 @@ object CallNotifications {
     fun allowed(context: Context): Boolean {
         val manager=context.getSystemService(NotificationManager::class.java)
         val permission=Build.VERSION.SDK_INT<33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED
-        return permission && manager.areNotificationsEnabled() && (manager.getNotificationChannel(CHANNEL)?.importance ?: 0)>=NotificationManager.IMPORTANCE_DEFAULT
+        return permission && manager.areNotificationsEnabled() && (manager.getNotificationChannel(CHANNEL)?.importance ?: 0)>=NotificationManager.IMPORTANCE_HIGH && manager.getNotificationChannel(CHANNEL)?.sound!=null
     }
     fun show(context: Context, event: CallEvent) {
         createChannel(context)

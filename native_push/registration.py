@@ -6,10 +6,10 @@ from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, update
 
-Device = Challenge = User = None
+Device = Challenge = Verification = User = None
 
 def configure(base, user_model):
-    global Device, Challenge, User
+    global Device, Challenge, Verification, User
     User = user_model
     class NativePushDevice(base):
         __tablename__ = 'native_push_devices'
@@ -26,6 +26,12 @@ def configure(base, user_model):
         user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
         expires_at = Column(DateTime(timezone=True), nullable=False)
         used = Column(Boolean, default=False, nullable=False)
+    class NativeDeviceVerification(base):
+        __tablename__ = 'native_device_verifications'
+        installation_id = Column(String(36), primary_key=True)
+        user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+        confirmed_at = Column(DateTime(timezone=True), nullable=False)
+    Verification = NativeDeviceVerification
     Device, Challenge = NativePushDevice, NativeEnrollmentChallenge
     return Device, Challenge
 
@@ -71,6 +77,8 @@ def exchange_challenge(db, challenge: str, installation_id: str, fcm_token: str,
     if not row:
         row = Device(installation_id=installation_id)
         db.add(row)
+    if row.user_id is not None and row.user_id != record.user_id:
+        db.query(Verification).filter_by(installation_id=installation_id).delete()
     row.user_id = record.user_id
     row.fcm_token = fcm_token
     row.credential_hash = digest(credential)

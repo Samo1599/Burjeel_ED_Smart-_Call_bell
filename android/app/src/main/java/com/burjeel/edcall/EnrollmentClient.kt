@@ -35,5 +35,6 @@ class EnrollmentClient(private val store: DeviceStore) {
         val status=request("/api/mobile/status",session=true)
         return request("/api/mobile/test",JSONObject().put("installation_id",store.installationId),csrf=status.getString("csrf_token"),session=true)
     }
+    fun resume(): JSONObject = request("/api/mobile/resume",JSONObject(),store.credential,session=true)
     fun confirm(): JSONObject = request("/api/mobile/ready",JSONObject(),store.credential,session=true)
 }
