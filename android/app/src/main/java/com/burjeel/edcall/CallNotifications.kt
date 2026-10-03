@@ -24,15 +24,18 @@ object CallNotifications {
         val permission=Build.VERSION.SDK_INT<33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED
         return permission && manager.areNotificationsEnabled() && (manager.getNotificationChannel(CHANNEL)?.importance ?: 0)>=NotificationManager.IMPORTANCE_HIGH && manager.getNotificationChannel(CHANNEL)?.sound!=null
     }
-    fun show(context: Context, event: CallEvent) {
+    fun show(context: Context, event: CallEvent): Boolean {
         createChannel(context)
-        if (!allowed(context)) return
+        if (!allowed(context)) return false
         val intent=Intent(context,MainActivity::class.java).putExtra("url",NativePolicy.safePath(event.path))
         intent.action="com.burjeel.edcall.OPEN.${event.eventId}"
         val pending=PendingIntent.getActivity(context,0,intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification=Notification.Builder(context,CHANNEL).setSmallIcon(R.drawable.ic_call)
             .setContentTitle(event.title).setContentText(event.body).setContentIntent(pending)
             .setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build()
-        context.getSystemService(NotificationManager::class.java).notify(NativePolicy.notificationTag(event.eventId),1,notification)
+        val manager=context.getSystemService(NotificationManager::class.java)
+        val tag=NativePolicy.notificationTag(event.eventId)
+        manager.notify(tag,1,notification)
+        return manager.activeNotifications.any { it.tag==tag && it.id==1 }
     }
 }

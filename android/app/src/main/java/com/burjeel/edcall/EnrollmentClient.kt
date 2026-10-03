@@ -36,5 +36,6 @@ class EnrollmentClient(private val store: DeviceStore) {
         return request("/api/mobile/test",JSONObject().put("installation_id",store.installationId),csrf=status.getString("csrf_token"),session=true)
     }
     fun resume(): JSONObject = request("/api/mobile/resume",JSONObject(),store.credential,session=true)
+    fun confirmReceived(receipt: String): JSONObject = request("/api/mobile/ready-received",JSONObject().put("receipt_token",receipt),store.credential,session=true)
     fun confirm(): JSONObject = request("/api/mobile/ready",JSONObject(),store.credential,session=true)
 }

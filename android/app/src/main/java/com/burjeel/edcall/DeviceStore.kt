@@ -48,6 +48,7 @@ class DeviceStore(context: Context): CredentialStateStorage {
     val lifecycle=DeviceLifecycle(this)
     val pendingRevocation: Boolean get()=pendingCredential.isNotEmpty()
     val registered: Boolean get()=credential.isNotEmpty() && !pendingRevocation
+    var testReceipt: String get()=read("test_receipt"); set(value)=write("test_receipt",value)
     fun beginRevocation() { lifecycle.beginLogout() }
     fun finishRevocation() { lifecycle.finishRevocation(pendingCredential) }
 }

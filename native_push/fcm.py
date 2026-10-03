@@ -35,6 +35,7 @@ def build_message(token, event):
     # Detailed call reason stays in authenticated web board, never on lock screen.
     body='Repeated call — open the app' if kind=='recall' else 'New alert — open the app'
     data={key:str(event.get(key,'')) for key in ('event_id','sent_at_ms','kind','call_id','recall_count')}
+    if kind=='test': data['receipt_token']=str(event.get('receipt_token',''))
     data['url']=path
     data.update(title=title,body=body,registration_hash=str(event.get('registration_hash','')))
     return messaging.Message(token=token,data=data,android=messaging.AndroidConfig(priority='high',ttl=timedelta(minutes=15)))

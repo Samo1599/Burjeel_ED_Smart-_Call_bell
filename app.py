@@ -583,6 +583,19 @@ def mobile_ready(request:Request,db:Session=Depends(get_db)):
     request.session['notification_verified']=True
     return {'url':role_home(u.role)}
 
+@app.post('/api/mobile/ready-received')
+async def mobile_ready_received(request:Request,db:Session=Depends(get_db)):
+    row=native_registration.authenticated_device(db,_mobile_credential(request))
+    u=_mobile_user(request,db)
+    if row.user_id!=u.id or request.session.get('native_installation')!=row.installation_id: raise HTTPException(403)
+    body=await _mobile_body(request)
+    receipt=str(body.get('receipt_token',''))
+    expected=request.session.get('native_test',{}).get('receipt_digest','')
+    if not receipt or not expected or not secrets.compare_digest(native_registration.digest(receipt),expected): raise HTTPException(409,'Waiting for device receipt')
+    result=mobile_ready(request,db)
+    request.session.pop('native_test',None)
+    return result
+
 @app.post('/api/mobile/resume')
 def mobile_resume(request:Request,db:Session=Depends(get_db)):
     row=native_registration.authenticated_device(db,_mobile_credential(request))
@@ -597,19 +610,24 @@ def mobile_resume(request:Request,db:Session=Depends(get_db)):
 @app.get('/mobile/setup',response_class=HTMLResponse)
 def mobile_setup(request:Request,db:Session=Depends(get_db)):
     _mobile_user(request,db)
-    return HTMLResponse("""<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Android notifications</title>
-    <h2>Android notifications</h2><p>Use Enable, Test, then Confirm in the app toolbar. Confirm only after seeing the test notification.</p>
-    <p id="state">Waiting for native app...</p><script>
+    html=render_template('login.html',ctx(request,db,current_user=None)).body.decode()
+    script="""<script src="/static/native-login.js"></script><script>
+    nativeProgress(0,'Credentials verified. Preparing notifications…','');
     async function enrollNative(){
-      if(!window.BurjeelNative){document.getElementById('state').textContent='Open this page in the Android app.';return;}
       try{const status=await fetch('/api/mobile/status').then(r=>{if(!r.ok)throw Error();return r.json()});
       const response=await fetch('/api/mobile/challenge',{method:'POST',headers:{'X-CSRF-Token':status.csrf_token}});
       if(!response.ok)throw Error();const body=await response.json();
+      if(!window.BurjeelNative)throw Error();
       window.BurjeelNative.postMessage(JSON.stringify({command:'enroll',challenge:body.challenge}));
-      document.getElementById('state').textContent='Registration requested. Watch the app toolbar.';
-      }catch(e){document.getElementById('state').textContent='Registration failed. Sign in and retry.';}
+      }catch(e){nativeProgress(1,'Device registration failed. Check your connection and retry.','Retry');}
     }
-    </script>""")
+    </script>"""
+    return HTMLResponse(html.replace('</body>',script+'</body>'))
+
+@app.get('/static/native-login.js')
+def native_login_script():
+    from native_push.login_ui import SCRIPT
+    return Response(SCRIPT,media_type='application/javascript',headers={'Cache-Control':'no-store'})
 
 @app.post('/api/mobile/test')
 async def mobile_test(request:Request,db:Session=Depends(get_db)):
@@ -617,9 +635,9 @@ async def mobile_test(request:Request,db:Session=Depends(get_db)):
     body=await _mobile_body(request); installation=body.get('installation_id','')
     row=db.query(NativePushDevice).filter_by(user_id=u.id,installation_id=installation,active=True).first()
     if not row: raise HTTPException(404)
-    event={'event_id':secrets.token_hex(16),'sent_at_ms':int(now_utc().timestamp()*1000),'title':'Burjeel ED test','kind':'test','url':role_home(u.role)}
+    event={'event_id':secrets.token_hex(16),'sent_at_ms':int(now_utc().timestamp()*1000),'title':'Burjeel ED test','kind':'test','url':role_home(u.role),'receipt_token':secrets.token_urlsafe(32)}
     result=native_fcm.send_native_to_user(db,u.id,event,installation)
-    if result.get('sent')==1: request.session['native_test']={'installation':installation,'at':int(now_utc().timestamp())}
+    if result.get('sent')==1: request.session['native_test']={'installation':installation,'at':int(now_utc().timestamp()),'receipt_digest':native_registration.digest(event['receipt_token'])}
     return {'event_id':event['event_id'],'provider':result}
 
 @app.post('/api/mobile/revoke')

@@ -120,3 +120,15 @@ class NativeRegistrationTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/mobile/test',headers=headers,json={'installation_id':str(uuid.uuid4())}).status_code,404)
         self.user.id=9002
         self.assertEqual(self.client.post('/api/mobile/test',headers=headers,json={'installation_id':second['installation_id']}).status_code,404)
+
+    def test_automatic_ready_requires_receipt_secret_from_push(self):
+        first=self.enroll(self.challenge()).json()
+        headers={'Authorization':'Bearer '+first['credential']}
+        status=self.client.get('/api/mobile/status').json()
+        with patch.object(app.native_fcm,'enabled',return_value=True),patch.object(app.native_fcm,'send_native_to_user',return_value={'sent':1}) as sender:
+            response=self.client.post('/api/mobile/test',headers={**self.origin,'X-CSRF-Token':status['csrf_token']},json={'installation_id':first['installation_id']})
+            self.assertNotIn('receipt_token',response.json())
+            receipt=sender.call_args.args[2]['receipt_token']
+            self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':'wrong'}).status_code,409)
+            self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':receipt}).status_code,200)
+            self.assertEqual(self.client.post('/api/mobile/ready-received',headers=headers,json={'receipt_token':receipt}).status_code,409)
