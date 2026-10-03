@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.webkit.*
 import android.widget.*
+import android.view.View
 import com.google.firebase.messaging.FirebaseMessaging
 import java.util.concurrent.Executors
 
@@ -13,6 +14,7 @@ class MainActivity: Activity() {
     private lateinit var web: WebView
     private lateinit var state: TextView
     private lateinit var store: DeviceStore
+    private lateinit var setupPanel: LinearLayout
     private val executor=Executors.newSingleThreadExecutor()
     private var testSent=false
     private var enrolling=false
@@ -20,11 +22,16 @@ class MainActivity: Activity() {
         super.onCreate(savedInstanceState)
         store=DeviceStore(this); CallNotifications.createChannel(this)
         val layout=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
-        state=TextView(this); layout.addView(state)
-        val actions=LinearLayout(this)
-        fun button(label: String,action: ()->Unit) { actions.addView(Button(this).apply { text=label; setOnClickListener { action() } },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f)) }
-        button("Enable") { enable() }; button("Test") { sendTest() }; button("Confirm") { confirm() }; button("Logout") { logout() }
-        layout.addView(actions)
+        setupPanel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(24,32,24,24); visibility=View.GONE }
+        setupPanel.addView(TextView(this).apply { text="Set up call notifications"; textSize=24f })
+        state=TextView(this).apply { textSize=18f; setPadding(0,20,0,20) }; setupPanel.addView(state)
+        val actions=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
+        fun button(label: String,action: ()->Unit) { actions.addView(Button(this).apply { text=label; setOnClickListener { action() } },LinearLayout.LayoutParams(-1,LinearLayout.LayoutParams.WRAP_CONTENT)) }
+        button("Allow notifications") { enable() }
+        button("Send test notification") { sendTest() }
+        button("I received the notification — continue") { confirm() }
+        button("Back to sign in") { logout() }
+        setupPanel.addView(actions); layout.addView(setupPanel)
         web=WebView(this)
         web.settings.javaScriptEnabled=true; web.settings.domStorageEnabled=true
         web.settings.allowFileAccess=false; web.settings.allowContentAccess=false
@@ -39,25 +46,37 @@ class MainActivity: Activity() {
                 if(request.url.path=="/notification-setup") { view.loadUrl(NativePolicy.ORIGIN+"/mobile/setup"); return true }
                 return false
             }
+            override fun onReceivedHttpError(view: WebView,request: WebResourceRequest,response: WebResourceResponse) {
+                if(request.isForMainFrame && response.statusCode==401 && NativePolicy.isAllowedUrl(request.url.toString())) {
+                    testSent=false
+                    view.loadUrl(NativePolicy.ORIGIN+"/login")
+                }
+            }
+            override fun onPageStarted(view: WebView,url: String,favicon: android.graphics.Bitmap?) {
+                val setup=NativePolicy.isAllowedUrl(url) && android.net.Uri.parse(url).path=="/mobile/setup"
+                setupPanel.visibility=if(setup) View.VISIBLE else View.GONE
+                view.visibility=if(setup) View.GONE else View.VISIBLE
+            }
             override fun onPageFinished(view: WebView,url: String) {
                 if(!NativePolicy.isAllowedUrl(url)) { view.loadUrl(NativePolicy.ORIGIN+"/login"); return }
                 if(android.net.Uri.parse(url).path=="/notification-setup") view.loadUrl(NativePolicy.ORIGIN+"/mobile/setup")
+                CookieManager.getInstance().flush()
                 refreshStatus()
             }
             override fun onRenderProcessGone(view: WebView,detail: RenderProcessGoneDetail): Boolean { view.destroy(); state.text="Page stopped. Restart the app."; return true }
         }
         layout.addView(web,LinearLayout.LayoutParams(-1,0,1f)); setContentView(layout)
         if(!bridgeReady) state.text="Update Android System WebView to enable secure registration."
-        web.loadUrl(NativePolicy.ORIGIN+NativePolicy.safePath(intent.getStringExtra("url") ?: "/nurse"))
+        web.loadUrl(NativePolicy.ORIGIN+NativePolicy.safePath(intent.getStringExtra("url") ?: "/"))
         FirebaseMessaging.getInstance().token.addOnSuccessListener { store.lifecycle.rotateToken(it); TokenRefreshWorker.schedule(this) }
     }
     override fun onResume() { super.onResume(); if(::state.isInitialized) refreshStatus() }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); web.loadUrl(NativePolicy.ORIGIN+NativePolicy.safePath(intent.getStringExtra("url") ?: "/nurse")) }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); web.loadUrl(NativePolicy.ORIGIN+NativePolicy.safePath(intent.getStringExtra("url") ?: "/")) }
     private fun refreshStatus() {
         state.text=when { store.pendingRevocation -> "Logout pending server confirmation. Connect to the network."
-            !CallNotifications.allowed(this) -> "Notifications blocked. Enable permission and the ED calls channel."
-            store.registered -> "Android registered. Test, then confirm after seeing the notification."
-            else -> "Sign in, then tap Enable for Android notifications." }
+            !CallNotifications.allowed(this) -> "Notifications are disabled. Tap Allow notifications to enable them."
+            store.registered -> "Notifications enabled. Send a test, then continue after it arrives."
+            else -> "Allow notifications so patient calls can reach you while the phone is locked." }
     }
     private fun enable() {
         if(enrolling) { state.text="Registration in progress. Please wait."; return }
@@ -115,6 +134,11 @@ class MainActivity: Activity() {
         store.beginRevocation(); getSystemService(NotificationManager::class.java).cancelAll(); TokenRefreshWorker.schedule(this); testSent=false
         CookieManager.getInstance().removeAllCookies { CookieManager.getInstance().flush(); web.loadUrl(NativePolicy.ORIGIN+"/login"); refreshStatus() }
         web.clearHistory()
+    }
+    override fun onRequestPermissionsResult(requestCode: Int,permissions: Array<out String>,grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode,permissions,grantResults)
+        if(requestCode==10 && grantResults.firstOrNull()==android.content.pm.PackageManager.PERMISSION_GRANTED) enable()
+        else refreshStatus()
     }
     override fun onDestroy() { executor.shutdown(); if(::web.isInitialized) web.destroy(); super.onDestroy() }
 }

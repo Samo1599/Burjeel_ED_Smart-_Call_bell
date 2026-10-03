@@ -3,6 +3,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PolicyTest {
+    @Test fun ordinaryLaunchUsesSessionRouter() {
+        assertEquals("/", NativePolicy.safePath("/"))
+    }
+
     @Test fun distinctEventsRemainVisible() {
         assertNotEquals(NativePolicy.notificationTag("first"), NativePolicy.notificationTag("recall1"))
     }
