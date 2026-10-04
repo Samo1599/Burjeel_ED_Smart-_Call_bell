@@ -13,6 +13,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt httpx==0.28.1
+      - run: pip install playwright==1.58.0
+      - run: python -m playwright install --with-deps chromium
       - run: python -m unittest discover -s tests -v
   android:
     runs-on: ubuntu-latest
