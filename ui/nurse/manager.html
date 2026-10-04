@@ -1,0 +1,51 @@
+{% extends 'ops-base.html' %}{% block title %}KPI Management{% endblock %}
+{% block body_class %}ops-manager-page{% endblock %}{% block content %}
+<div class="page-head">
+  <div><div class="eyebrow">Operational oversight & analytics</div><h1>KPI Management</h1><p>Call-bell performance and reports.</p></div>
+  <details class="ops-export"><summary>Export ▾</summary><div><a href="/manager/export.xlsx?{{filter_qs}}">Excel (.xlsx)</a><a href="/manager/export.pdf?{{filter_qs}}">PDF report</a></div></details>
+</div>
+
+<form class="manager-filter panel" method="get" action="/manager">
+  <div class="period-buttons">
+    <button name="period" value="today" class="filter-chip {{'active' if period=='today' else ''}}">Today</button>
+    <button name="period" value="week" class="filter-chip {{'active' if period=='week' else ''}}">Weekly</button>
+    <button name="period" value="month" class="filter-chip {{'active' if period=='month' else ''}}">Monthly</button>
+    <button type="button" class="filter-chip {{'active' if period=='custom' else ''}}" onclick="document.getElementById('customDates').classList.toggle('show')">Custom Date</button>
+  </div>
+  <div id="customDates" class="custom-dates {{'show' if period=='custom' else ''}}">
+    <label>From <input type="date" name="from" value="{{from_date}}"></label>
+    <label>To <input type="date" name="to" value="{{to_date}}"></label>
+    <button class="btn primary" name="period" value="custom">Apply</button>
+  </div>
+</form>
+
+<div class="ops-kpi-primary">
+<div>{{icon('bell')}}<b>{{kpi.total}}</b><span>Total calls</span></div><div>{{icon('check')}}<b>{{kpi.avg_response}}</b><span>Avg response</span></div><div>{{icon('check')}}<b>{{kpi.sla_rate}}</b><span>SLA compliance</span></div><div class="ops-escalations">{{icon('bell')}}<b>{{kpi.escalations}}</b><span>Escalations</span></div></div>
+<div class="ops-kpi-secondary"><span><i class="amber-dot"></i><b>{{kpi.over_2m}}</b> Over 2 min</span><span><i class="red-dot"></i><b>{{kpi.over_5m}}</b> Over 5 min</span><span>Median response <b>{{kpi.median_response}}</b></span><span>Charge takeovers <b>{{kpi.takeovers}}</b></span></div>
+
+<div class="manager-grid">
+<section class="panel">
+  <div class="section-head"><div><h2>Nurse Performance</h2><p class="muted">Call volume, average response and escalation exposure.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Nurse</th><th>Calls</th><th>Avg response</th><th>Over SLA</th><th>Escalated</th></tr></thead><tbody>
+  {% for n in nurse_perf %}<tr><td data-label="Nurse"><b>{{n.name}}</b></td><td data-label="Calls">{{n.calls}}</td><td data-label="Avg response">{{n.avg_response}}</td><td data-label="Over SLA">{{n.over_sla}}</td><td data-label="Escalated">{{n.escalated}}</td></tr>{% endfor %}
+  {% if not nurse_perf %}<tr><td colspan="5" class="muted">No calls in this period.</td></tr>{% endif %}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <div class="section-head"><div><h2>Room Performance</h2><p class="muted">Demand and response by room.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Room</th><th>Zone</th><th>Calls</th><th>Avg response</th><th>SLA breaches</th></tr></thead><tbody>
+  {% for r in room_perf %}<tr><td data-label="Room"><b>{{r.room}}</b></td><td data-label="Zone">{{r.zone}}</td><td data-label="Calls">{{r.calls}}</td><td data-label="Avg response">{{r.avg_response}}</td><td data-label="SLA breaches">{{r.over_sla}}</td></tr>{% endfor %}
+  {% if not room_perf %}<tr><td colspan="5" class="muted">No calls in this period.</td></tr>{% endif %}
+  </tbody></table></div>
+</section>
+</div>
+
+<section class="panel management-call-table">
+  <div class="section-head"><div><h2>Call Lifecycle</h2><p class="muted">{{range_label}} · Created → Acknowledged → Arrived → Resolved</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Room</th><th>Created</th><th>Primary nurse</th><th>Status</th><th>Response</th><th>Total duration</th><th>Escalated</th><th>Takeover</th><th>Reason</th></tr></thead><tbody>
+  {% for c in call_rows %}<tr><td data-label="Room"><b>{{c.room}}</b><br><small>{{c.zone}}</small></td><td data-label="Created">{{c.created}}</td><td data-label="Primary nurse">{{c.nurse}}</td><td data-label="Status"><span class="badge {{c.status}}">{{c.status_label}}</span></td><td data-label="Response">{{c.response}}</td><td data-label="Total duration">{{c.duration}}</td><td data-label="Escalated">{{c.escalated}}</td><td data-label="Takeover">{{c.takeover}}</td><td data-label="Reason">{{c.reason}}</td></tr>{% endfor %}
+  {% if not call_rows %}<tr><td colspan="9" class="muted">No calls in this period.</td></tr>{% endif %}
+  </tbody></table></div>
+</section>
+{% endblock %}
