@@ -267,14 +267,14 @@ async def system_error_monitor(request:Request,call_next):
     except Exception as exc:
         if not skip:
             source=getattr(request.scope.get('endpoint'),'__name__','http')
-            _record_runtime_event(source,path,type(exc).__name__,str(exc),traceback.format_exc(limit=10),_diag_user_ref(request))
+            await asyncio.to_thread(_record_runtime_event,source,path,type(exc).__name__,str(exc),traceback.format_exc(limit=10),_diag_user_ref(request))
         raise
     if not skip:
         if response.status_code>=500:
             source=getattr(request.scope.get('endpoint'),'__name__','http')
-            _record_runtime_event(source,path,f'HTTP_{response.status_code}',f'HTTP {response.status_code} response',user_ref=_diag_user_ref(request))
+            await asyncio.to_thread(_record_runtime_event,source,path,f'HTTP_{response.status_code}',f'HTTP {response.status_code} response',user_ref=_diag_user_ref(request))
         elif response.status_code<400 and not path.startswith('/api/client-error'):
-            _mark_runtime_recovered(path)
+            await asyncio.to_thread(_mark_runtime_recovered,path)
     return response
 
 def current_user(request:Request,db:Session):
@@ -554,17 +554,21 @@ def enforce_escalations(db):
                 db.commit()
             break
 
+def nursing_delay_monitor_iteration():
+    # The session and all synchronous provider/database work belong to this thread.
+    db=SessionLocal()
+    try:
+        enforce_escalations(db)
+    except Exception as exc:
+        db.rollback()
+        print(f'NURSING_DELAY_MONITOR_ERROR {type(exc).__name__}: {str(exc)[:300]}',flush=True)
+        _record_runtime_event('escalation-monitor','/escalation',type(exc).__name__,str(exc),db=db)
+    finally:
+        db.close()
+
 async def nursing_delay_monitor_loop():
     while True:
-        db=SessionLocal()
-        try:
-            enforce_escalations(db)
-        except Exception as exc:
-            db.rollback()
-            print(f'NURSING_DELAY_MONITOR_ERROR {type(exc).__name__}: {str(exc)[:300]}',flush=True)
-            _record_runtime_event('escalation-monitor','/escalation',type(exc).__name__,str(exc),db=db)
-        finally:
-            db.close()
+        await asyncio.to_thread(nursing_delay_monitor_iteration)
         await asyncio.sleep(1)
 
 @app.on_event('startup')
@@ -982,8 +986,17 @@ def _perform_patient_recall(db,c):
     if new_count>=3 and c.status!='taken_over':
         c.status='escalated'; c.escalated_at=c.escalated_at or now_utc(); c.escalation_reason='Patient re-called 3 times and nurse has not arrived'
     db.commit()
-    if c.assigned_nurse_id:
-        send_push_to_user(db,c.assigned_nurse_id,f'Re-call #{new_count} - {c.room.code}',f'Patient is still waiting: {c.reason}','/nurse',extra={'kind':'recall','tag':f'recall-{c.id}-{new_count}'})
+    # Room handover/admin reassignment can change after the original call was created.
+    recipient_id=c.room.assigned_nurse_id or c.assigned_nurse_id
+    if recipient_id:
+        result=send_push_to_user(db,recipient_id,f'Re-call #{new_count} - {c.room.code}',f'Patient is still waiting: {c.reason}','/nurse',extra={'kind':'recall','tag':f'recall-{c.id}-{new_count}','call_id':c.id,'recall_count':new_count}) or {}
+        web_sent=int(result.get('sent',0) or 0)
+        native_queued=int((result.get('native') or {}).get('queued',0) or 0)
+        print(f'PATIENT_RECALL_PUSH call={c.id} recall={new_count} user={recipient_id} web_accepted={web_sent} native_queued={native_queued}',flush=True)
+        if not web_sent and not native_queued:
+            _record_runtime_event('recall-push','/recall','PatientRecallPushError',f'Call {c.id}; re-call {new_count}; nurse {recipient_id}; no push accepted or queued',db=db)
+    else:
+        _record_runtime_event('recall-push','/recall','PatientRecallRecipientMissing',f'Call {c.id}; no nurse assigned to room',db=db)
     if new_count>=3:
         for charge in db.query(User).filter_by(role='charge',active=True).all():
             send_push_to_user(db,charge.id,f'Patient Re-call Escalation - {c.room.code}',f'Patient re-called 3 times and nurse has not arrived.','/charge',extra={'kind':'recall-escalation','tag':f'recall-escalation-{c.id}'})
