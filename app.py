@@ -764,7 +764,30 @@ def alerts_page(request:Request,db:Session=Depends(get_db)):
     return render_template('alerts.html',ctx(request,db,alerts=rows,unread=unread))
 
 @app.get('/healthz')
-def healthz(): return {'status':'ok'}
+def healthz():
+    """Render readiness probe: only report healthy when the app can reach its primary DB."""
+    started=now_utc()
+    db=SessionLocal()
+    try:
+        db.execute(text('SELECT 1'))
+        latency_ms=max(0,round((now_utc()-started).total_seconds()*1000,1))
+        return JSONResponse(
+            {'status':'ok','database':'ok','latency_ms':latency_ms},
+            status_code=200,
+            headers={'Cache-Control':'no-store'}
+        )
+    except Exception as exc:
+        try: db.rollback()
+        except Exception: pass
+        if _is_transient_db_error(exc): _reset_db_pool()
+        return JSONResponse(
+            {'status':'unhealthy','database':'unavailable'},
+            status_code=503,
+            headers={'Cache-Control':'no-store'}
+        )
+    finally:
+        try: db.close()
+        except Exception: pass
 @app.get('/',response_class=HTMLResponse)
 def index(request:Request,db:Session=Depends(get_db)):
     u=current_user(request,db)
