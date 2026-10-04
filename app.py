@@ -1401,7 +1401,6 @@ def admin_regenerate_room_token(room_id:int,request:Request,db:Session=Depends(g
     if not room: raise HTTPException(404)
     room.qr_token=secrets.token_urlsafe(18); log_action(db,'ADMIN_ROOM_TOKEN_REGENERATED',room.code,room=room,user=admin); db.commit()
     return RedirectResponse('/admin#rooms',303)
-@app.post('/api/call/{call_id}/{action}')
 def call_action(call_id:int,action:str,request:Request,db:Session=Depends(get_db)):
     u=require_role(request,db,['nurse','charge','nurse_supervisor','manager','ed_manager','hod','admin']); c=db.get(Call,call_id)
     if not c: raise HTTPException(404)
@@ -1462,6 +1461,8 @@ async def reassign_active_call(call_id:int,request:Request,db:Session=Depends(ge
     if old_id:
         send_push_to_user(db,old_id,f'Call Reassigned - {c.room.code}',f'Call moved to {nurse.name} by {supervisor.name}.','/nurse')
     return {'ok':True,'call':serialize_call(c),'from_nurse':old_name,'to_nurse':nurse.name,'reason':reason,'timer_preserved':True}
+
+app.post('/api/call/{call_id}/{action}')(call_action)
 
 @app.post('/api/room/{room_id}/assign')
 async def assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):

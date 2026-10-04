@@ -1,5 +1,6 @@
 /* Nurse presentation only: existing call endpoints and native enrollment stay intact. */
 (() => {
+  if(!document.getElementById('nurse-live-root'))return;
   let roomFilter='all', handoverRoomId=null, handoverBusy=false;
   const dialog=document.getElementById('handoverDialog');
   function applyRoomFilter() {
