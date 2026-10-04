@@ -1,0 +1,12 @@
+<section class="panel" id="escalation-settings" style="margin-bottom:24px">
+<h2>Escalation & Live Screen Sound</h2>
+<p class="muted">Nurse → Nurse Supervisor → Nurse Manager → ED Manager → HOD. Managers and HOD receive monitoring alerts only. Delays are measured from the previous stage and apply immediately to pending stages.</p>
+<form method="post" action="/admin/escalation-settings">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px">
+{% for key,label in [('nurse_supervisor','Nurse → Nurse Supervisor'),('manager','Supervisor → Nurse Manager'),('ed_manager','Nurse Manager → ED Manager'),('hod','ED Manager → HOD'),('sound_repeat','Live Screen sound repeat')] %}
+<div><label><strong>{{label}}</strong></label><div style="display:flex;gap:8px"><label>Minutes<input type="number" name="{{key}}_minutes" min="0" step="1" required value="{{escalation_settings[key]//60}}" style="width:100%"></label><label>Seconds<input type="number" name="{{key}}_seconds" min="0" max="59" step="1" required value="{{escalation_settings[key]%60}}" style="width:100%"></label></div></div>
+{% endfor %}</div>
+<label style="display:block;margin:16px 0"><input type="checkbox" name="same_duration"> Use the first stage duration for all escalation stages</label>
+<p class="muted">Sound repeats until Arrived or Closed. Acknowledge does not stop it. Enable sound once on the Live Screen. Keep this screen open.</p>
+<button class="btn primary" type="submit">Save timing settings</button>
+</form></section>

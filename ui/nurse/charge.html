@@ -41,11 +41,11 @@
           <div class="charge-call-reason">{{c.reason}}</div>
         </div>
         {% if c.escalation_reason %}<div class="alert danger small">{{c.escalation_reason}}</div>{% endif %}
-        <div class="actions">
+        {% if 'takeover_calls' in current_permissions %}<div class="actions">
           {% if c.status in ['new','escalated'] %}<button class="btn danger" onclick="callAction({{c.id}},'takeover')">Take Over</button>{% endif %}
           {% if c.status in ['taken_over','acknowledged','escalated'] %}<button class="btn success" onclick="callAction({{c.id}},'arrive')">Arrived</button>{% endif %}
         </div>
-        {% if c.status in ['new','acknowledged','escalated','taken_over'] %}
+        {% endif %}{% if 'reassign_calls' in current_permissions and c.status in ['new','acknowledged','escalated','taken_over'] %}
         <button type="button" class="nw-handover" onclick="openOpsReassign('call-{{c.id}}')">{{icon('swap')}}Reassign nurse</button><template id="ops-reassign-call-{{c.id}}"><div class="reassign-box">
           <div class="reassign-title"><b>Reassign Nurse</b><span>Original call timer continues</span></div>
           <select id="reassign-nurse-{{c.id}}">
@@ -62,7 +62,7 @@
       {% else %}
         <div class="charge-ready-row">
           <div class="ready">● Ready</div>
-          <button type="button" class="nw-handover" onclick="openOpsReassign('room-{{room.id}}')">{{icon('swap')}}Reassign nurse</button><template id="ops-reassign-room-{{room.id}}"><label>Select a nurse</label><select id="ops-room-nurse-{{room.id}}"><option value="">Reassign nurse…</option>{% for n in nurses %}<option value="{{n.id}}">{{n.name}}</option>{% endfor %}</select><button type="button" class="btn primary" onclick="assignRoom({{room.id}},document.getElementById('ops-room-nurse-{{room.id}}').value)">Assign nurse</button></template>
+          {% if 'assign_rooms' in current_permissions %}<button type="button" class="nw-handover" onclick="openOpsReassign('room-{{room.id}}')">{{icon('swap')}}Reassign nurse</button><template id="ops-reassign-room-{{room.id}}"><label>Select a nurse</label><select id="ops-room-nurse-{{room.id}}"><option value="">Reassign nurse…</option>{% for n in nurses %}<option value="{{n.id}}">{{n.name}}</option>{% endfor %}</select><button type="button" class="btn primary" onclick="assignRoom({{room.id}},document.getElementById('ops-room-nurse-{{room.id}}').value)">Assign nurse</button></template>{% endif %}
         </div>
       {% endif %}
     </div>

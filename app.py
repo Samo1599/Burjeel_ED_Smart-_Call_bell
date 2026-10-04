@@ -17,6 +17,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
 
 try:
@@ -177,6 +178,11 @@ class PushDevice(Base):
 class InAppNotification(Base):
     __tablename__='in_app_notifications'; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey('users.id'),nullable=False,index=True); kind=Column(String(60),default='alert',nullable=False); title=Column(String(220),nullable=False); body=Column(Text); url=Column(String(300),default='/'); created_at=Column(DateTime(timezone=True),default=now_utc,nullable=False,index=True); read_at=Column(DateTime(timezone=True)); user=relationship('User')
 
+class EscalationSetting(Base):
+    __tablename__='escalation_settings'; key=Column(String(80),primary_key=True); value=Column(Text,nullable=False)
+class EscalationNotice(Base):
+    __tablename__='escalation_notices'; call_id=Column(Integer,ForeignKey('calls.id'),primary_key=True); action=Column(String(80),primary_key=True); created_at=Column(DateTime(timezone=True),default=now_utc,nullable=False)
+
 from native_push import registration as native_registration
 from native_push import fcm as native_fcm
 NativePushDevice, NativeEnrollmentChallenge = native_registration.configure(Base, User)
@@ -292,8 +298,8 @@ WORK_PROFILE_PRESETS={
  'bedside_nurse':{'label':'Bedside Nurse','permissions':['my_rooms']},
  'charge_nurse':{'label':'Nurse In Charge','permissions':['my_rooms','live_board','wallboard','assign_rooms','reassign_calls','takeover_calls']},
  'nurse_supervisor':{'label':'Nurse Supervisor','permissions':['live_board','wallboard','management','assign_rooms','reassign_calls','takeover_calls']},
- 'nurse_manager':{'label':'Nurse Manager','permissions':['live_board','wallboard','management','export_reports','assign_rooms','reassign_calls','takeover_calls']},
- 'ed_manager':{'label':'ED Manager','permissions':['live_board','wallboard','management','export_reports','assign_rooms','reassign_calls','takeover_calls']},
+ 'nurse_manager':{'label':'Nurse Manager','permissions':['live_board','wallboard','management','export_reports']},
+ 'ed_manager':{'label':'ED Manager','permissions':['live_board','wallboard','management','export_reports']},
  'hod':{'label':'HOD','permissions':['live_board','wallboard','management','export_reports']},
  'system_admin':{'label':'System Admin','permissions':[x[0] for x in PERMISSION_DEFS]}
 }
@@ -317,10 +323,10 @@ def get_user_permissions(db,user):
     if rec:
         try:
             raw=json.loads(rec.permissions_json or '[]')
-            if isinstance(raw,list): return {p for p in raw if p in {x[0] for x in PERMISSION_DEFS}}
+            if isinstance(raw,list): return {p for p in raw if p in {x[0] for x in PERMISSION_DEFS}} - (OPERATIONAL_PERMISSIONS if user.role in MONITOR_ONLY_ROLES else set())
         except Exception: pass
     profile=ROLE_DEFAULT_PROFILE.get(user.role,'bedside_nurse')
-    return set(WORK_PROFILE_PRESETS.get(profile,WORK_PROFILE_PRESETS['bedside_nurse'])['permissions'])
+    return set(WORK_PROFILE_PRESETS.get(profile,WORK_PROFILE_PRESETS['bedside_nurse'])['permissions']) - (OPERATIONAL_PERMISSIONS if user.role in MONITOR_ONLY_ROLES else set())
 
 def require_permission(request,db,permission):
     user=current_user(request,db)
@@ -420,10 +426,42 @@ async def push_display_receipt(request:Request):
     except (ValueError,TypeError,KeyError,AttributeError):return Response(status_code=400)
     return Response(status_code=204)
 
+MONITOR_ONLY_ROLES={'manager','ed_manager','hod'}
+OPERATIONAL_PERMISSIONS={'my_rooms','assign_rooms','reassign_calls','takeover_calls','admin_control','user_permissions','diagnostics'}
+ESCALATION_DEFAULTS={'nurse_supervisor':120,'manager':120,'ed_manager':120,'hod':120,'sound_repeat':120}
+
+def escalation_settings(db):
+    row=db.get(EscalationSetting,'timing')
+    values=dict(ESCALATION_DEFAULTS)
+    if row:
+        try:
+            saved=json.loads(row.value)
+            values.update({k:v for k,v in saved.items() if k in values and type(v) is int and v>0})
+        except (ValueError,TypeError,AttributeError): pass
+    return values
+
+@app.post('/admin/escalation-settings')
+async def save_escalation_settings(request:Request,db:Session=Depends(get_db)):
+    admin=require_permission(request,db,'admin_control'); form=await request.form(); values={}
+    try:
+        for key in ESCALATION_DEFAULTS:
+            minutes=int(str(form.get(key+'_minutes','0'))); seconds=int(str(form.get(key+'_seconds','0')))
+            if minutes<0 or seconds<0 or seconds>59 or minutes*60+seconds<=0: raise ValueError()
+            values[key]=minutes*60+seconds
+        if form.get('same_duration')=='on':
+            for key in NURSING_DELAY_ACTIONS: values[key[1]]=values['nurse_supervisor']
+    except (ValueError,TypeError):
+        return JSONResponse({'error':'Enter a positive duration; seconds must be 0–59.'},400)
+    row=db.get(EscalationSetting,'timing')
+    if not row: row=EscalationSetting(key='timing',value='{}');db.add(row)
+    row.value=json.dumps(values);log_action(db,'ESCALATION_TIMING_UPDATED',json.dumps(values),user=admin);db.commit()
+    return RedirectResponse('/admin#escalation-settings',303)
+
 NURSING_DELAY_STEP_SECONDS=120
 NURSING_DELAY_ACTIONS=[
     ('NURSING_DELAY_SUPERVISOR_NOTIFIED','nurse_supervisor','Nurse Supervisor'),
     ('NURSING_DELAY_MANAGER_NOTIFIED','manager','Nurse Manager'),
+    ('NURSING_DELAY_ED_MANAGER_NOTIFIED','ed_manager','ED Manager'),
     ('NURSING_DELAY_HOD_NOTIFIED','hod','HOD')
 ]
 
@@ -436,55 +474,51 @@ def _notify_nursing_delay_level(db,c,action,role,label,elapsed_seconds):
     nurse=c.assigned_nurse.name if c.assigned_nurse else 'Unassigned'
     minutes=max(1,int(elapsed_seconds//60))
     title=f'Nursing response delay - {room}'
-    body=f'No nurse arrival after {minutes} minutes. Primary nurse: {nurse}. Management alert only; patient call remains with nursing.'
+    elapsed_label=f'{int(elapsed_seconds)//60:02d}:{int(elapsed_seconds)%60:02d}'
+    note='Monitoring alert only; patient call remains with nursing.' if role in MONITOR_ONLY_ROLES else 'Please coordinate nurse attendance.'
+    body=f'No nurse arrival after {elapsed_label}. Primary nurse: {nurse}. {note}'
     sent=0
     for person in recipients:
         result=send_push_to_user(db,person.id,title,body,role_home(person.role),extra={'kind':'nursing-delay','tag':f'nursing-delay-{c.id}-{role}','call_id':c.id,'room':room,'escalation_role':role})
         sent+=int(result.get('sent',0))
+        if result.get('errors') or not result.get('sent'):
+            _record_runtime_event('escalation-push','/escalation','EscalationPushError',f'{label}: call {c.id}; user {person.id}; no push delivery accepted' if not result.get('sent') else f'{label}: partial push failure',db=db)
+    if not recipients:
+        _record_runtime_event('escalation-push','/escalation','EscalationRecipientMissing',f'No active {label} configured; call {c.id}',db=db)
     detail=f'{label} notified for delayed nursing response; room={room}; nurse={nurse}; elapsed={minutes}m; recipients={len(recipients)}; push_sent={sent}'
     log_action(db,action,detail,call=c,room=c.room)
     return len(recipients),sent
 
 def enforce_escalations(db):
-    changed=False
-    now=now_utc()
+    now=now_utc(); settings=escalation_settings(db)
     active=db.query(Call).filter(Call.status.in_(['new','acknowledged','escalated','taken_over'])).order_by(Call.created_at).all()
     for c in active:
-        if c.arrived_at or c.resolved_at:
-            continue
-        created=c.created_at.replace(tzinfo=timezone.utc) if c.created_at and c.created_at.tzinfo is None else c.created_at
-        if not created:
-            continue
-        elapsed=max(0,(now-created).total_seconds())
-
-        supervisor_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_SUPERVISOR_NOTIFIED')
-        manager_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_MANAGER_NOTIFIED')
-        hod_log=_audit_for_call_action(db,c.id,'NURSING_DELAY_HOD_NOTIFIED')
-
-        if not supervisor_log and elapsed>=NURSING_DELAY_STEP_SECONDS:
-            if c.status in ['new','acknowledged']:
-                c.status='escalated'
-                c.escalated_at=c.escalated_at or now
-                c.escalation_reason='Nursing response delayed: nurse has not arrived within 2 minutes'
-            _notify_nursing_delay_level(db,c,'NURSING_DELAY_SUPERVISOR_NOTIFIED','nurse_supervisor','Nurse Supervisor',elapsed)
-            changed=True
-            continue
-
-        if supervisor_log and not manager_log:
-            t=supervisor_log.created_at.replace(tzinfo=timezone.utc) if supervisor_log.created_at and supervisor_log.created_at.tzinfo is None else supervisor_log.created_at
-            if t and (now-t).total_seconds()>=NURSING_DELAY_STEP_SECONDS:
-                _notify_nursing_delay_level(db,c,'NURSING_DELAY_MANAGER_NOTIFIED','manager','Nurse Manager',elapsed)
-                changed=True
-                continue
-
-        if manager_log and not hod_log:
-            t=manager_log.created_at.replace(tzinfo=timezone.utc) if manager_log.created_at and manager_log.created_at.tzinfo is None else manager_log.created_at
-            if t and (now-t).total_seconds()>=NURSING_DELAY_STEP_SECONDS:
-                _notify_nursing_delay_level(db,c,'NURSING_DELAY_HOD_NOTIFIED','hod','HOD',elapsed)
-                changed=True
-                continue
-    if changed:
-        db.commit()
+        if c.arrived_at or c.resolved_at: continue
+        anchor=_as_utc(c.created_at)
+        if not anchor: continue
+        elapsed=max(0,(now-anchor).total_seconds())
+        for action,role,label in NURSING_DELAY_ACTIONS:
+            notice=db.get(EscalationNotice,(c.id,action))
+            # Retain stages already sent by older versions.
+            old=_audit_for_call_action(db,c.id,action)
+            if notice or old:
+                anchor=_as_utc(notice.created_at if notice else old.created_at);continue
+            if (now-anchor).total_seconds()<settings[role]: break
+            try:
+                with db.begin_nested():
+                    db.add(EscalationNotice(call_id=c.id,action=action,created_at=now));db.flush()
+            except IntegrityError:
+                db.expire_all();break
+            if role=='nurse_supervisor' and c.status in ['new','acknowledged']:
+                c.status='escalated';c.escalated_at=c.escalated_at or now
+                c.escalation_reason='Nursing response delayed: nurse has not arrived'
+            # Durable unique claim prevents parallel pollers/workers from duplicating a stage.
+            db.commit()
+            db.refresh(c)
+            if not c.arrived_at and not c.resolved_at:
+                _notify_nursing_delay_level(db,c,action,role,label,elapsed)
+                db.commit()
+            break
 
 async def nursing_delay_monitor_loop():
     while True:
@@ -494,9 +528,10 @@ async def nursing_delay_monitor_loop():
         except Exception as exc:
             db.rollback()
             print(f'NURSING_DELAY_MONITOR_ERROR {type(exc).__name__}: {str(exc)[:300]}',flush=True)
+            _record_runtime_event('escalation-monitor','/escalation',type(exc).__name__,str(exc),db=db)
         finally:
             db.close()
-        await asyncio.sleep(10)
+        await asyncio.sleep(1)
 
 @app.on_event('startup')
 async def start_nursing_delay_monitor():
@@ -1147,7 +1182,7 @@ def wallboard_payload(db:Session):
             s=c.created_at.replace(tzinfo=timezone.utc) if c.created_at.tzinfo is None else c.created_at; e=c.arrived_at or c.resolved_at; e=e.replace(tzinfo=timezone.utc) if e.tzinfo is None else e; rt.append((e-s).total_seconds())
     avg=int(sum(rt)/len(rt)) if rt else 0
     stats={'total_rooms':len(rooms),'active':len(calls),'escalated':sum(1 for c in calls if c.status=='escalated'),'over_sla':sum(1 for c in call_out if c['over_sla']),'avg_response':f'{avg//60:02d}:{avg%60:02d}','unassigned':db.query(Room).filter(Room.occupied==True,Room.assigned_nurse_id.is_(None)).count()}
-    return {'calls':call_out,'rooms_view':rooms_view,'recent':recent,'workload':workload,'handovers':handovers,'stats':stats,'zones':[z[0] for z in db.query(Room.zone).distinct().order_by(Room.zone).all()]}
+    return {'sound_repeat_seconds':escalation_settings(db)['sound_repeat'],'calls':call_out,'rooms_view':rooms_view,'recent':recent,'workload':workload,'handovers':handovers,'stats':stats,'zones':[z[0] for z in db.query(Room.zone).distinct().order_by(Room.zone).all()]}
 
 @app.get('/wallboard',response_class=HTMLResponse)
 def wallboard_page(request:Request,db:Session=Depends(get_db)):
@@ -1267,7 +1302,7 @@ def admin_page(request:Request,db:Session=Depends(get_db)):
     profile_options=[{'key':k,'label':v['label']} for k,v in WORK_PROFILE_PRESETS.items()]
     permission_defs=[{'key':k,'label':label,'description':desc} for k,label,desc in PERMISSION_DEFS]
     permission_presets_json=json.dumps({k:v['permissions'] for k,v in WORK_PROFILE_PRESETS.items()})
-    return render_template('admin.html',ctx(request,db,rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,push_devices=push_devices,push_healthy=push_healthy,push_attention=push_attention,active_staff=active_staff,active_rooms=active_rooms,open_errors=open_errors,permission_rows=permission_rows,profile_options=profile_options,permission_defs=permission_defs,permission_presets_json=permission_presets_json,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
+    return render_template('admin.html',ctx(request,db,escalation_settings=escalation_settings(db),rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,push_devices=push_devices,push_healthy=push_healthy,push_attention=push_attention,active_staff=active_staff,active_rooms=active_rooms,open_errors=open_errors,permission_rows=permission_rows,profile_options=profile_options,permission_defs=permission_defs,permission_presets_json=permission_presets_json,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
 
 @app.post('/admin/users/{uid}/permissions')
 async def admin_user_permissions(uid:int,request:Request,db:Session=Depends(get_db)):
@@ -1402,7 +1437,7 @@ def admin_regenerate_room_token(room_id:int,request:Request,db:Session=Depends(g
     room.qr_token=secrets.token_urlsafe(18); log_action(db,'ADMIN_ROOM_TOKEN_REGENERATED',room.code,room=room,user=admin); db.commit()
     return RedirectResponse('/admin#rooms',303)
 def call_action(call_id:int,action:str,request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','nurse_supervisor','manager','ed_manager','hod','admin']); c=db.get(Call,call_id)
+    u=require_role(request,db,['nurse','charge','nurse_supervisor','admin']); c=db.get(Call,call_id)
     if not c: raise HTTPException(404)
     if action=='ack':
         if u.role=='nurse' and c.assigned_nurse_id!=u.id: raise HTTPException(403)
@@ -1476,7 +1511,7 @@ async def assign_room(room_id:int,request:Request,db:Session=Depends(get_db)):
 
 @app.post('/api/handover')
 async def create_handover(request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','nurse_supervisor','manager','ed_manager','hod','admin']); data=await request.json(); room=db.get(Room,int(data['room_id'])); to_nurse=db.get(User,int(data['to_nurse_id']))
+    u=require_role(request,db,['nurse','charge','nurse_supervisor','admin']); data=await request.json(); room=db.get(Room,int(data['room_id'])); to_nurse=db.get(User,int(data['to_nurse_id']))
     if not room or not to_nurse: raise HTTPException(404)
     if to_nurse.role!='nurse': return JSONResponse({'ok':False,'error':'Target must be a nurse'},400)
     if u.role=='nurse' and room.assigned_nurse_id!=u.id: raise HTTPException(403)
@@ -1486,7 +1521,7 @@ async def create_handover(request:Request,db:Session=Depends(get_db)):
 
 @app.post('/api/handover/{hid}/accept')
 def accept_handover(hid:int,request:Request,db:Session=Depends(get_db)):
-    u=require_role(request,db,['nurse','charge','nurse_supervisor','manager','ed_manager','hod','admin']); h=db.get(Handover,hid)
+    u=require_role(request,db,['nurse','charge','nurse_supervisor','admin']); h=db.get(Handover,hid)
     if not h: raise HTTPException(404)
     if u.role=='nurse' and h.to_nurse_id!=u.id: raise HTTPException(403)
     h.status='accepted'; h.accepted_at=now_utc(); h.room.assigned_nurse_id=h.to_nurse_id; log_action(db,'HANDOVER_ACCEPTED',f'{h.room.code}: {h.from_nurse.name} -> {h.to_nurse.name}',room=h.room,user=u); db.commit()
