@@ -4,3 +4,14 @@ __pycache__/
 .env
 .venv/
 playwright-report/
+
+# Native local configuration and private signing
+android/.gradle/
+android/**/build/
+android/local.properties
+android/app/google-services.json
+*.jks
+*.keystore
+service-account*.json
+
+android/.kotlin/

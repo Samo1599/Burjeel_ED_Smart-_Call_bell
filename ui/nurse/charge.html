@@ -1,0 +1,94 @@
+{% extends 'ops-base.html' %}{% block title %}Charge Nurse Live Board{% endblock %}{% block body_class %}charge-board-page{% endblock %}
+{% block content %}
+<div id="charge-live-root" class="charge-board-root view-compact" data-refresh-key="{{refresh_key}}">
+  <div class="charge-board-head">
+    <div>
+      <div class="eyebrow">CHARGE NURSE</div>
+      <h1>Live Board</h1>
+      <p>Calls, escalations and room assignments.</p>
+    </div>
+    <div class="charge-board-tools">
+      <div class="charge-view-switch" role="group" aria-label="Display mode">
+        <button class="charge-view-btn active" data-view="compact" onclick="setChargeView('compact',this)">Compact</button>
+        <button class="charge-view-btn" data-view="cards" onclick="setChargeView('cards',this)">Cards</button>
+        <button class="charge-view-btn" data-view="list" onclick="setChargeView('list',this)">List</button>
+      </div>
+      <button class="btn secondary notification-verify" data-notification-button data-notification-state="verify" onclick="enablePush()">🟠 Verify Notifications</button>
+      <button class="btn primary" onclick="toggleChargeFullscreen()">Full screen</button>
+    </div>
+  </div>
+
+  <div class="charge-stats">
+    <div class="charge-stat"><span>Rooms</span><b>{{ rooms|length }}</b></div>
+    <div class="charge-stat danger"><span>Open calls</span><b>{{ calls|length }}</b></div>
+    <div class="charge-stat amber"><span>Escalated</span><b>{{ calls|selectattr('status','equalto','escalated')|list|length }}</b></div>
+  </div>
+
+  <div class="nw-filters"><button type="button" data-charge-filter="all" aria-pressed="true">All rooms</button><button type="button" data-charge-filter="active" aria-pressed="false">Active calls <span>{{calls|length}}</span></button></div>
+  <section class="grid rooms charge-room-grid">
+  {% for group in ['escalated','active','ready'] %}{% for room in rooms %}{% set rcalls=calls|selectattr('room_id','equalto',room.id)|list %}{% set category='escalated' if rcalls and rcalls[0].status=='escalated' else ('active' if rcalls else 'ready') %}{% if category==group %}
+  <article class="room-card charge-room-card {% if rcalls %}hot{% endif %}" data-active="{{'true' if rcalls else 'false'}}">
+    <div class="charge-room-main">
+      <div class="room-top"><b>{{room.code}}</b><span>{{room.zone}}</span></div>
+      <div class="assignment">Assigned: <b>{{ room.assigned_nurse.name if room.assigned_nurse else 'Unassigned' }}</b></div>
+
+      {% if rcalls %}{% set c=rcalls[0] %}
+        <div class="charge-call-summary">
+          <div>
+            <div class="call-status {{c.status}}">{{c.status.replace('_',' ')|upper}}</div>
+            {% set c_elapsed=elapsed_for_call(c) %}<div class="timer" data-created="{{utc_iso(c.created_at)}}" data-elapsed="{{c_elapsed}}" {% if c.arrived_at or c.resolved_at %}data-stop="{{utc_iso(c.arrived_at or c.resolved_at)}}"{% endif %} data-call-id="{{c.id}}">{{'%02d:%02d'|format(c_elapsed//60,c_elapsed%60)}}</div>
+          </div>
+          <div class="charge-call-reason">{{c.reason}}</div>
+        </div>
+        {% if c.escalation_reason %}<div class="alert danger small">{{c.escalation_reason}}</div>{% endif %}
+        {% if 'takeover_calls' in current_permissions %}<div class="actions">
+          {% if c.status in ['new','escalated'] %}<button class="btn danger" onclick="callAction({{c.id}},'takeover')">Take Over</button>{% endif %}
+          {% if c.status in ['taken_over','acknowledged','escalated'] %}<button class="btn success" onclick="callAction({{c.id}},'arrive')">Arrived</button>{% endif %}
+        </div>
+        {% endif %}{% if 'reassign_calls' in current_permissions and c.status in ['new','acknowledged','escalated','taken_over'] %}
+        <button type="button" class="nw-handover" onclick="openOpsReassign('call-{{c.id}}')">{{icon('swap')}}Reassign nurse</button><template id="ops-reassign-call-{{c.id}}"><div class="reassign-box">
+          <div class="reassign-title"><b>Reassign Nurse</b><span>Original call timer continues</span></div>
+          <select id="reassign-nurse-{{c.id}}">
+            <option value="">Select active nurse…</option>
+            {% for n in nurses %}<option value="{{n.id}}" {% if c.assigned_nurse_id==n.id %}disabled{% endif %}>{{n.name}}{% if c.assigned_nurse_id==n.id %} (Current){% endif %}</option>{% endfor %}
+          </select>
+          <select id="reassign-reason-{{c.id}}">
+            <option value="">Reason…</option>
+            <option>Workload balancing</option><option>Break</option><option>Shift change</option><option>No response</option><option>Clinical priority</option><option>Other</option>
+          </select>
+          <button class="btn secondary" onclick="reassignCall({{c.id}})">Reassign</button>
+        </div></template>
+        {% endif %}
+      {% else %}
+        <div class="charge-ready-row">
+          <div class="ready">● Ready</div>
+          {% if 'assign_rooms' in current_permissions %}<button type="button" class="nw-handover" onclick="openOpsReassign('room-{{room.id}}')">{{icon('swap')}}Reassign nurse</button><template id="ops-reassign-room-{{room.id}}"><label>Select a nurse</label><select id="ops-room-nurse-{{room.id}}"><option value="">Reassign nurse…</option>{% for n in nurses %}<option value="{{n.id}}">{{n.name}}</option>{% endfor %}</select><button type="button" class="btn primary" onclick="assignRoom({{room.id}},document.getElementById('ops-room-nurse-{{room.id}}').value)">Assign nurse</button></template>{% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </article>{% endif %}{% endfor %}{% endfor %}
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+var chargeView=localStorage.getItem('charge-board-view')||'compact';
+function setChargeView(view,el){
+  chargeView=view;
+  localStorage.setItem('charge-board-view',view);
+  applyChargeView();
+}
+function applyChargeView(){
+  var root=document.getElementById('charge-live-root');if(!root)return;
+  root.classList.remove('view-compact','view-cards','view-list');
+  root.classList.add('view-'+chargeView);
+  root.querySelectorAll('.charge-view-btn').forEach(function(b){b.classList.toggle('active',b.dataset.view===chargeView)});
+}
+function toggleChargeFullscreen(){
+  if(!document.fullscreenElement){if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen()}
+  else if(document.exitFullscreen)document.exitFullscreen();
+}
+applyChargeView();
+startSilentRefresh('#charge-live-root',3000,function(){applyChargeView();applyOpsChargeFilter()});
+</script>
+{% endblock %}
