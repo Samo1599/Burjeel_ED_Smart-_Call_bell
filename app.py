@@ -433,9 +433,11 @@ ESCALATION_DEFAULTS={'nurse_supervisor':120,'manager':120,'ed_manager':120,'hod'
 def escalation_settings(db):
     row=db.get(EscalationSetting,'timing')
     values=dict(ESCALATION_DEFAULTS)
+    values['same_duration']=False
     if row:
         try:
             saved=json.loads(row.value)
+            values['same_duration']=saved.get('same_duration') is True
             values.update({k:v for k,v in saved.items() if k in values and type(v) is int and v>0})
         except (ValueError,TypeError,AttributeError): pass
     return values
@@ -445,7 +447,9 @@ async def save_escalation_settings(request:Request,db:Session=Depends(get_db)):
     admin=require_permission(request,db,'admin_control'); form=await request.form(); values={}
     try:
         for key in ESCALATION_DEFAULTS:
-            minutes=int(str(form.get(key+'_minutes','0'))); seconds=int(str(form.get(key+'_seconds','0')))
+            source='uniform' if form.get('same_duration')=='on' and key!='sound_repeat' else key
+            fallback='nurse_supervisor' if source=='uniform' else key
+            minutes=int(str(form.get(source+'_minutes',form.get(fallback+'_minutes','0')))); seconds=int(str(form.get(source+'_seconds',form.get(fallback+'_seconds','0'))))
             if minutes<0 or seconds<0 or seconds>59 or minutes*60+seconds<=0: raise ValueError()
             values[key]=minutes*60+seconds
         if form.get('same_duration')=='on':
@@ -454,7 +458,9 @@ async def save_escalation_settings(request:Request,db:Session=Depends(get_db)):
         return JSONResponse({'error':'Enter a positive duration; seconds must be 0–59.'},400)
     row=db.get(EscalationSetting,'timing')
     if not row: row=EscalationSetting(key='timing',value='{}');db.add(row)
+    values['same_duration']=form.get('same_duration')=='on'
     row.value=json.dumps(values);log_action(db,'ESCALATION_TIMING_UPDATED',json.dumps(values),user=admin);db.commit()
+    request.session['escalation_saved']=True
     return RedirectResponse('/admin#escalation-settings',303)
 
 NURSING_DELAY_STEP_SECONDS=120
@@ -1302,7 +1308,7 @@ def admin_page(request:Request,db:Session=Depends(get_db)):
     profile_options=[{'key':k,'label':v['label']} for k,v in WORK_PROFILE_PRESETS.items()]
     permission_defs=[{'key':k,'label':label,'description':desc} for k,label,desc in PERMISSION_DEFS]
     permission_presets_json=json.dumps({k:v['permissions'] for k,v in WORK_PROFILE_PRESETS.items()})
-    return render_template('admin.html',ctx(request,db,escalation_settings=escalation_settings(db),rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,push_devices=push_devices,push_healthy=push_healthy,push_attention=push_attention,active_staff=active_staff,active_rooms=active_rooms,open_errors=open_errors,permission_rows=permission_rows,profile_options=profile_options,permission_defs=permission_defs,permission_presets_json=permission_presets_json,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
+    return render_template('admin.html',ctx(request,db,escalation_saved=bool(request.session.pop('escalation_saved',False)),escalation_settings=escalation_settings(db),rooms=rooms,users=users,nurses=nurses,audit_logs=audit_logs,active_calls=active_calls,push_count=push_count,push_devices=push_devices,push_healthy=push_healthy,push_attention=push_attention,active_staff=active_staff,active_rooms=active_rooms,open_errors=open_errors,permission_rows=permission_rows,profile_options=profile_options,permission_defs=permission_defs,permission_presets_json=permission_presets_json,vapid_ready=bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY),room_msg=request.query_params.get('room_msg',''),room_msg_type=request.query_params.get('room_msg_type','success')))
 
 @app.post('/admin/users/{uid}/permissions')
 async def admin_user_permissions(uid:int,request:Request,db:Session=Depends(get_db)):

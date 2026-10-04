@@ -73,7 +73,8 @@ class EscalationFlowTests(unittest.TestCase):
         with patch.object(app,'current_user',side_effect=lambda request,db:db.get(app.User,admin.id)),TestClient(app.app) as client:
             self.assertEqual(client.post('/admin/escalation-settings',data=form,follow_redirects=False).status_code,303)
             self.db.expire_all();self.assertEqual(app.escalation_settings(self.db)['ed_manager'],443)
-            page=client.get('/admin');self.assertEqual(page.status_code,200);self.assertIn('Save timing settings',page.text)
+            page=client.get('/admin');self.assertEqual(page.status_code,200);self.assertIn('Save Settings',page.text);self.assertIn('Settings saved successfully',page.text)
+            self.assertNotIn('Settings saved successfully',client.get('/admin').text)
             form['hod_seconds']='60'
             self.assertEqual(client.post('/admin/escalation-settings',data=form).status_code,400)
             self.assertEqual(app.escalation_settings(self.db)['hod'],443)
@@ -81,3 +82,14 @@ class EscalationFlowTests(unittest.TestCase):
 
     def test_wallboard_repeat_behavior(self):
         subprocess.run(['node','tests/test_wallboard_repeat.js'],cwd=Path(__file__).resolve().parents[1],check=True,capture_output=True)
+
+    def test_unified_form_works_with_individual_fields_disabled(self):
+        admin=self.db.query(app.User).filter_by(role='admin').first()
+        form={'same_duration':'on','uniform_minutes':'3','uniform_seconds':'17','sound_repeat_minutes':'0','sound_repeat_seconds':'14'}
+        with patch.object(app,'current_user',side_effect=lambda request,db:db.get(app.User,admin.id)),TestClient(app.app) as client:
+            response=client.post('/admin/escalation-settings',data=form,follow_redirects=False)
+            self.assertEqual(response.status_code,303)
+            self.db.expire_all();settings=app.escalation_settings(self.db)
+            self.assertTrue(all(settings[k]==197 for _,k,_ in app.NURSING_DELAY_ACTIONS))
+            self.assertEqual(settings['sound_repeat'],14)
+            self.assertTrue(settings['same_duration'])
