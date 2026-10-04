@@ -1215,6 +1215,7 @@ def wallboard_payload(db:Session):
         stop_at=stop_at.replace(tzinfo=timezone.utc) if stop_at and stop_at.tzinfo is None else stop_at
         display_elapsed=max(0,int((stop_at-created).total_seconds())) if stop_at and created else elapsed
         item={'id':c.id,'room':c.room.code,'room_id':c.room_id,'zone':c.room.zone,'status':c.status,'reason':c.reason,'nurse':c.assigned_nurse.name if c.assigned_nurse else 'Unassigned','takeover':c.taken_over_by.name if c.taken_over_by else None,'elapsed_seconds':display_elapsed,'elapsed_label':f'{display_elapsed//60:02d}:{display_elapsed%60:02d}','created_at':created.isoformat() if created else '','timer_stop':stop_at.isoformat() if stop_at else '','sla_progress':min(100,int((display_elapsed/max(1,SLA_SECONDS*2))*100)),'over_sla':c.status in ['new','escalated'] and elapsed>SLA_SECONDS,'alert_stage':alert_stage}
+        item['recall_count']=_recall_state(db,c)['recall_count']
         call_out.append(item); call_by_room[c.room_id]=item
     rooms=db.query(Room).order_by(Room.zone,Room.code).all(); rooms_view=[]
     for r in rooms:
